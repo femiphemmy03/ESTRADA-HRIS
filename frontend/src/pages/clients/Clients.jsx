@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { MapContainer, TileLayer, Marker, Circle, useMapEvents } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Circle, useMapEvents, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import api from '../../lib/api.js';
 import { useAuth } from '../../context/AuthContext.jsx';
@@ -130,6 +130,14 @@ function NewClientModal({ onClose, onCreated }) {
   );
 }
 
+function RecenterMap({ position }) {
+  const map = useMap();
+  useEffect(() => {
+    if (position) map.flyTo(position, 17);
+  }, [position]); // eslint-disable-line
+  return null;
+}
+
 function LocationPicker({ position, setPosition }) {
   useMapEvents({
     click(e) {
@@ -142,44 +150,141 @@ function LocationPicker({ position, setPosition }) {
 function NewSiteModal({ clientId, onClose, onCreated }) {
   const [name, setName] = useState('');
   const [radius, setRadius] = useState(150);
-  const [position, setPosition] = useState([9.0765, 7.3986]); // Abuja default center
+  const [radiusTouched, setRadiusTouched] = useState(false); // true once admin manually edits the radius
+  const [position, setPosition] = useState(null); // no default — must be set (auto or manual)
+  const [accuracy, setAccuracy] = useState(null);
+  const [locating, setLocating] = useState(false);
+  const [locateError, setLocateError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  // Fallback map view only — no marker/circle shown until `position` is actually set.
+  const initialMapCenter = [9.0820, 8.6753]; // roughly the center of Nigeria, display only
+
+  function suggestRadius(accuracyMeters) {
+    // Auto-suggested allowance: device accuracy + a buffer, rounded up to the nearest 50m,
+    // with a sensible floor/ceiling. Admin can still override manually.
+    const withBuffer = accuracyMeters + 50;
+    const rounded = Math.ceil(withBuffer / 50) * 50;
+    return Math.min(500, Math.max(100, rounded));
+  }
+
+  function useMyLocation() {
+    setLocateError('');
+    if (!navigator.geolocation) {
+      setLocateError('Geolocation is not supported by this browser.');
+      return;
+    }
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setPosition([pos.coords.latitude, pos.coords.longitude]);
+        const acc = Math.round(pos.coords.accuracy);
+        setAccuracy(acc);
+        if (!radiusTouched) setRadius(suggestRadius(acc));
+        setLocating(false);
+      },
+      (err) => {
+        setLocateError(
+          err.code === err.PERMISSION_DENIED
+            ? 'Location permission was denied. You can allow it in your browser settings, or set the location manually on the map below.'
+            : err.message || 'Could not get your location — set it manually on the map below.'
+        );
+        setLocating(false);
+      },
+      { enableHighAccuracy: true, timeout: 15000 }
+    );
+  }
+
+  // Auto-detect as soon as the modal opens — no button press required.
+  // The button below still works for retrying (e.g. after granting permission, or moving outdoors).
+  useEffect(() => {
+    useMyLocation();
+  }, []); // eslint-disable-line
+
+  function handleManualPick(pos) {
+    setPosition(pos);
+    setAccuracy(null); // manual map clicks have no device accuracy figure to base a suggestion on
+  }
+
+  function handleRadiusChange(v) {
+    setRadiusTouched(true);
+    setRadius(v);
+  }
 
   async function submit(e) {
     e.preventDefault();
+    if (!position) {
+      setError('Please set the site location first — click "Use my current location" while physically at the site, or click the exact spot on the map.');
+      return;
+    }
     setLoading(true);
-    await api.post('/clients/sites', {
-      clientId,
-      name,
-      latitude: position[0],
-      longitude: position[1],
-      radiusMeters: Number(radius),
-    });
-    setLoading(false);
-    onCreated();
-    onClose();
+    setError('');
+    try {
+      await api.post('/clients/sites', {
+        clientId,
+        name,
+        latitude: position[0],
+        longitude: position[1],
+        radiusMeters: Number(radius),
+      });
+      onCreated();
+      onClose();
+    } catch (err) {
+      setError(err.response?.data?.message || 'Failed to register site');
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
       <form onSubmit={submit} className="card p-6 w-full max-w-2xl space-y-4">
         <h2 className="font-bold text-slate-900 dark:text-white">Register New Site</h2>
-        <p className="text-xs text-slate-400">Click on the map to set the site's GPS location. New sites require HR approval before activation unless you are HR/Admin.</p>
+        <p className="text-xs text-slate-400">
+          We'll try to detect the site's GPS location automatically as soon as this opens. For the most accurate result, open this on a phone <strong>while physically standing at the site</strong>. You can also click the exact spot on the map to override it. New sites require HR approval before activation unless you are HR/Admin.
+        </p>
+
+        {error && <div className="bg-red-50 dark:bg-red-900/30 text-red-600 text-sm px-3 py-2 rounded-lg">{error}</div>}
+
         <div className="grid sm:grid-cols-2 gap-3">
           <input required className="input" placeholder="Site name" value={name} onChange={(e) => setName(e.target.value)} />
-          <input type="number" className="input" placeholder="Radius (meters)" value={radius} onChange={(e) => setRadius(e.target.value)} />
+          <div>
+            <input type="number" className="input" placeholder="Radius (meters)" value={radius} onChange={(e) => handleRadiusChange(e.target.value)} />
+            {!radiusTouched && accuracy != null && (
+              <p className="text-[11px] text-slate-400 mt-1">Auto-suggested from GPS accuracy — adjust if the physical site is larger/smaller.</p>
+            )}
+          </div>
         </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <button type="button" onClick={useMyLocation} disabled={locating} className="btn-primary text-sm">
+            {locating ? 'Detecting location…' : position ? '📍 Re-detect my location' : '📍 Use my current location'}
+          </button>
+          {accuracy != null && (
+            <span className={`text-xs ${accuracy > 100 ? 'text-amber-600' : 'text-green-600'}`}>
+              Device accuracy: ±{accuracy}m {accuracy > 100 ? '(quite wide — move outdoors or near a window if possible)' : ''}
+            </span>
+          )}
+          {locateError && <span className="text-xs text-red-600">{locateError}</span>}
+        </div>
+
         <div className="h-72 rounded-lg overflow-hidden border border-slate-200 dark:border-slate-800">
-          <MapContainer center={position} zoom={13} style={{ height: '100%', width: '100%' }}>
+          <MapContainer center={position || initialMapCenter} zoom={position ? 17 : 6} style={{ height: '100%', width: '100%' }}>
             <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="&copy; OpenStreetMap contributors" />
-            <LocationPicker position={position} setPosition={setPosition} />
-            <Circle center={position} radius={Number(radius) || 0} pathOptions={{ color: '#EE3124' }} />
+            <LocationPicker position={position} setPosition={handleManualPick} />
+            <RecenterMap position={position} />
+            {position && <Circle center={position} radius={Number(radius) || 0} pathOptions={{ color: '#EE3124' }} />}
           </MapContainer>
         </div>
-        <p className="text-xs text-slate-400">Selected: {position[0].toFixed(5)}, {position[1].toFixed(5)}</p>
+
+        <p className="text-xs text-slate-400">
+          {position ? `Selected: ${position[0].toFixed(5)}, ${position[1].toFixed(5)}` : 'No location set yet — the map above is just a general view until you set one.'}
+        </p>
+
         <div className="flex gap-2">
           <button type="button" onClick={onClose} className="btn-secondary flex-1">Cancel</button>
-          <button type="submit" disabled={loading} className="btn-primary flex-1">{loading ? 'Saving…' : 'Register Site'}</button>
+          <button type="submit" disabled={loading || !position} className="btn-primary flex-1">{loading ? 'Saving…' : 'Register Site'}</button>
         </div>
       </form>
     </div>

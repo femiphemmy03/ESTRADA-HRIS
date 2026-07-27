@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
-import { isWithinRadius } from '../utils/geo.js';
+import { distanceInMeters } from '../utils/geo.js';
 import { logActivity } from '../utils/activityLog.js';
 
 const router = Router();
@@ -37,9 +37,14 @@ router.post('/check-in', async (req, res, next) => {
     const rule = await getRuleForEmployee(employee);
     if (!rule) return res.status(400).json({ message: 'No attendance rule configured for your site' });
 
-    const withinRadius = isWithinRadius(latitude, longitude, employee.site.latitude, employee.site.longitude, rule.gpsRadiusMeters);
+    const distance = distanceInMeters(latitude, longitude, employee.site.latitude, employee.site.longitude);
+    const withinRadius = distance <= rule.gpsRadiusMeters;
     if (!withinRadius) {
-      return res.status(403).json({ message: 'You are outside the allowed check-in radius for your site' });
+      return res.status(403).json({
+        message: `You are approximately ${Math.round(distance).toLocaleString()}m from ${employee.site.name}. Allowed check-in radius is ${rule.gpsRadiusMeters}m.`,
+        distanceMeters: Math.round(distance),
+        allowedRadiusMeters: rule.gpsRadiusMeters,
+      });
     }
 
     const today = new Date();
