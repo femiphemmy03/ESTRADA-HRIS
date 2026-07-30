@@ -6,6 +6,37 @@ import { DEFAULT_ONBOARDING_TASKS } from '../utils/onboardingTasks.js';
 const router = Router();
 router.use(requireAuth);
 
+// Bulk summary for the HR/Admin Onboarding management screen — one round trip instead of
+// one employee list call + N per-employee checklist calls. Must be declared before the
+// "/:employeeId" route below so Express doesn't treat "summary" as an employeeId param.
+router.get('/summary', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
+  try {
+    const employees = await prisma.employee.findMany({
+      where: { employmentStatus: 'ONBOARDING', archived: false },
+      include: { client: true, site: true },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const employeeIds = employees.map((e) => e.id);
+    const grouped = employeeIds.length
+      ? await prisma.onboardingTask.groupBy({
+          by: ['employeeId', 'isComplete'],
+          where: { employeeId: { in: employeeIds } },
+          _count: { _all: true },
+        })
+      : [];
+
+    const progress = {};
+    for (const id of employeeIds) progress[id] = { done: 0, total: 0 };
+    for (const row of grouped) {
+      progress[row.employeeId].total += row._count._all;
+      if (row.isComplete) progress[row.employeeId].done += row._count._all;
+    }
+
+    res.json({ employees, progress });
+  } catch (err) { next(err); }
+});
+
 // Idempotent: if this employee already has checklist tasks (e.g. auto-created on invite),
 // this just returns them instead of creating duplicates. Safe to call again for employees
 // who were invited before onboarding auto-init existed.

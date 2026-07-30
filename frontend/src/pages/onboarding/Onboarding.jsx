@@ -20,16 +20,11 @@ function OnboardingManagement() {
 
   async function load() {
     setLoading(true);
-    const { data } = await api.get('/employees', { params: { employmentStatus: 'ONBOARDING' } });
+    // Single bulk call instead of one request per employee — see backend
+    // GET /onboarding/summary for how this is computed in one round trip.
+    const { data } = await api.get('/onboarding/summary');
     setEmployees(data.employees);
-    const entries = await Promise.all(
-      data.employees.map(async (emp) => {
-        const { data: t } = await api.get(`/onboarding/${emp.id}`);
-        const done = t.tasks.filter((x) => x.isComplete).length;
-        return [emp.id, { done, total: t.tasks.length }];
-      })
-    );
-    setProgress(Object.fromEntries(entries));
+    setProgress(data.progress);
     setLoading(false);
   }
 

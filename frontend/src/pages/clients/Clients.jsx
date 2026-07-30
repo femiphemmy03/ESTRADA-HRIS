@@ -239,7 +239,7 @@ function NewSiteModal({ clientId, onClose, onCreated }) {
 
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-      <form onSubmit={submit} className="card p-6 w-full max-w-2xl space-y-4">
+      <form onSubmit={submit} className="card p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto space-y-4">
         <h2 className="font-bold text-slate-900 dark:text-white">Register New Site</h2>
         <p className="text-xs text-slate-400">
           We'll try to detect the site's GPS location automatically as soon as this opens. For the most accurate result, open this on a phone <strong>while physically standing at the site</strong>. You can also click the exact spot on the map to override it. New sites require HR approval before activation unless you are HR/Admin.
