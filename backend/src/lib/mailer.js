@@ -15,10 +15,10 @@ async function send({ to, subject, html }) {
 export async function sendOnboardingInvite({ to, firstName, invitationLink }) {
   await send({
     to,
-    subject: 'Welcome to ESTRADA International — Complete Your Onboarding',
+    subject: 'Welcome to ESTRADA International Staffing Solutions — Complete Your Onboarding',
     html: `
       <div style="font-family: Arial, sans-serif; max-width: 560px; margin: auto;">
-        <h2 style="color:#1B2A4A;">Welcome to ESTRADA International, ${firstName}!</h2>
+        <h2 style="color:#1B2A4A;">Welcome to ESTRADA International Staffing Solutions, ${firstName}!</h2>
         <p>Your employee account has been created on ESTRADA HRIS. Click below to set your password and begin onboarding.</p>
         <p style="margin: 24px 0;">
           <a href="${invitationLink}" style="background: linear-gradient(90deg,#F7941D,#EE3124); color:#fff; padding:12px 24px; border-radius:8px; text-decoration:none;">Start Onboarding</a>
