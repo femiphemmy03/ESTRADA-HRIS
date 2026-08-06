@@ -27,13 +27,40 @@ router.get('/', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'PAYROLL_OFFICER', 'TEAM_
               ],
             }
           : {}),
-        // Team Leads only see their own site's employees
+        // Team Leads only see their own direct reports
         ...(req.user.role === 'TEAM_LEAD' ? { teamLeadId: req.user.employee?.id } : {}),
       },
       include: { department: true, position: true, client: true, site: true },
       orderBy: { createdAt: 'desc' },
     });
     res.json({ employees });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Eligible line-manager candidates for the Edit Assignment "Team Lead" dropdown.
+// Team Lead-role candidates are scoped to the same site (they're physically there);
+// HR Admin / Super Admin are always included regardless of their own site, since they
+// may need to stand in as line manager for a small/unstaffed site and already see
+// every request at the HR approval stage anyway.
+// IMPORTANT: declared before "/:id" so Express doesn't treat this as an :id param.
+router.get('/eligible-team-leads', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
+  try {
+    const { siteId, excludeEmployeeId } = req.query;
+    const candidates = await prisma.employee.findMany({
+      where: {
+        archived: false,
+        ...(excludeEmployeeId ? { id: { not: excludeEmployeeId } } : {}),
+        OR: [
+          { user: { role: { in: ['HR_ADMIN', 'SUPER_ADMIN'] } } },
+          { user: { role: 'TEAM_LEAD' }, ...(siteId ? { siteId } : {}) },
+        ],
+      },
+      include: { user: { select: { role: true } } },
+      orderBy: { firstName: 'asc' },
+    });
+    res.json({ candidates });
   } catch (err) {
     next(err);
   }
@@ -48,6 +75,7 @@ router.get('/:id', async (req, res, next) => {
         position: true,
         client: true,
         site: true,
+        teamLead: { select: { id: true, firstName: true, lastName: true } },
         educationHistory: true,
         employmentHistory: true,
         documents: { include: { documentType: true } },
@@ -69,11 +97,11 @@ const updateSchema = z.object({
   gender: z.string().optional(),
   dateOfBirth: z.string().optional(),
   address: z.string().optional(),
-  departmentId: z.string().optional(),
-  positionId: z.string().optional(),
-  clientId: z.string().optional(),
-  siteId: z.string().optional(),
-  teamLeadId: z.string().optional(),
+  departmentId: z.string().optional().nullable(),
+  positionId: z.string().optional().nullable(),
+  clientId: z.string().optional().nullable(),
+  siteId: z.string().optional().nullable(),
+  teamLeadId: z.string().optional().nullable(),
   emergencyContactName: z.string().optional(),
   emergencyContactPhone: z.string().optional(),
   emergencyContactRelationship: z.string().optional(),
@@ -87,7 +115,7 @@ const updateSchema = z.object({
   pensionAdmin: z.string().optional(),
 });
 
-// Employee completes/edits their own biodata, or HR edits any profile
+// Employee completes/edits their own biodata, or HR edits any profile (including assignment)
 router.patch('/:id', async (req, res, next) => {
   try {
     const data = updateSchema.parse(req.body);
@@ -97,6 +125,21 @@ router.patch('/:id', async (req, res, next) => {
     const isSelf = target.userId === req.user.id;
     const isPrivileged = ['SUPER_ADMIN', 'HR_ADMIN'].includes(req.user.role);
     if (!isSelf && !isPrivileged) return res.status(403).json({ message: 'Not permitted' });
+
+    // Validate team lead assignment: no self-assignment, and the candidate must hold an
+    // eligible role — otherwise a leave request could get stuck with nobody able to act on it.
+    if (data.teamLeadId) {
+      if (data.teamLeadId === target.id) {
+        return res.status(400).json({ message: 'An employee cannot be their own team lead' });
+      }
+      const candidate = await prisma.employee.findUnique({
+        where: { id: data.teamLeadId },
+        include: { user: { select: { role: true } } },
+      });
+      if (!candidate || !['TEAM_LEAD', 'HR_ADMIN', 'SUPER_ADMIN'].includes(candidate.user.role)) {
+        return res.status(400).json({ message: 'Selected team lead must have the Team Lead, HR Admin, or Super Admin role' });
+      }
+    }
 
     const employee = await prisma.employee.update({
       where: { id: req.params.id },

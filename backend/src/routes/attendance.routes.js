@@ -8,6 +8,11 @@ import { logActivity } from '../utils/activityLog.js';
 const router = Router();
 router.use(requireAuth);
 
+const WEEKDAY_CODES = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+function todayCode(date) {
+  return WEEKDAY_CODES[date.getDay()];
+}
+
 async function getRuleForEmployee(employee) {
   if (employee.siteId) {
     const siteRule = await prisma.attendanceRule.findUnique({ where: { siteId: employee.siteId } });
@@ -37,19 +42,27 @@ router.post('/check-in', async (req, res, next) => {
     const rule = await getRuleForEmployee(employee);
     if (!rule) return res.status(400).json({ message: 'No attendance rule configured for your site' });
 
-    const distance = distanceInMeters(latitude, longitude, employee.site.latitude, employee.site.longitude);
-    const withinRadius = distance <= rule.gpsRadiusMeters;
-    if (!withinRadius) {
-      return res.status(403).json({
-        message: `You are approximately ${Math.round(distance).toLocaleString()}m from ${employee.site.name}. Allowed check-in radius is ${rule.gpsRadiusMeters}m.`,
-        distanceMeters: Math.round(distance),
-        allowedRadiusMeters: rule.gpsRadiusMeters,
-      });
-    }
-
+    const now = new Date();
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const now = new Date();
+
+    // Hybrid support: if today is a configured remote/WFH day for this rule, skip the
+    // geofence check entirely — location is still recorded for reference, just not enforced.
+    const remoteDayCodes = (rule.remoteDays || '').split(',').map((d) => d.trim()).filter(Boolean);
+    const isRemoteDay = remoteDayCodes.includes(todayCode(now));
+    const workMode = isRemoteDay ? 'REMOTE' : 'ONSITE';
+
+    if (!isRemoteDay) {
+      const distance = distanceInMeters(latitude, longitude, employee.site.latitude, employee.site.longitude);
+      const withinRadius = distance <= rule.gpsRadiusMeters;
+      if (!withinRadius) {
+        return res.status(403).json({
+          message: `You are approximately ${Math.round(distance).toLocaleString()}m from ${employee.site.name}. Allowed check-in radius is ${rule.gpsRadiusMeters}m.`,
+          distanceMeters: Math.round(distance),
+          allowedRadiusMeters: rule.gpsRadiusMeters,
+        });
+      }
+    }
 
     const shiftStartMin = parseHHMM(rule.shiftStart);
     const nowMin = minutesSinceMidnight(now);
@@ -57,7 +70,7 @@ router.post('/check-in', async (req, res, next) => {
 
     const attendance = await prisma.attendance.upsert({
       where: { employeeId_date: { employeeId: employee.id, date: today } },
-      update: { checkInAt: now, checkInLat: latitude, checkInLng: longitude, status, siteId: employee.siteId },
+      update: { checkInAt: now, checkInLat: latitude, checkInLng: longitude, status, siteId: employee.siteId, workMode },
       create: {
         employeeId: employee.id,
         siteId: employee.siteId,
@@ -66,6 +79,7 @@ router.post('/check-in', async (req, res, next) => {
         checkInLat: latitude,
         checkInLng: longitude,
         status,
+        workMode,
       },
     });
 

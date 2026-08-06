@@ -211,6 +211,7 @@ model Department {
   name      String     @unique
   employees Employee[]
   positions Position[]
+  documents Document[]
   createdAt DateTime   @default(now())
 }
 
@@ -270,7 +271,8 @@ model AttendanceRule {
   site               Site?    @relation(fields: [siteId], references: [id])
   isDefault          Boolean  @default(false)
   name               String
-  workingDays        String   // csv e.g. "MON,TUE,WED,THU,FRI"
+  workingDays        String   // csv e.g. "MON,TUE,WED,THU,FRI" — all days attendance is expected (onsite + remote)
+  remoteDays         String   @default("") // csv subset of workingDays that are WFH/remote — GPS check is skipped on these
   shiftStart         String   // "08:00"
   shiftEnd           String   // "17:00"
   gracePeriodMinutes Int      @default(15)
@@ -313,6 +315,7 @@ model Attendance {
   checkOutLng   Float?
   hoursWorked   Float?
   status        AttendanceStatus  @default(ABSENT)
+  workMode      String            @default("ONSITE") // "ONSITE" | "REMOTE" — REMOTE skips GPS radius validation
   notes         String?
   createdAt     DateTime          @default(now())
 
@@ -462,8 +465,11 @@ model DocumentType {
 
 model Document {
   id             String   @id @default(uuid())
-  documentTypeId String
-  documentType   DocumentType @relation(fields: [documentTypeId], references: [id])
+  documentTypeId String?  // optional now: EMPLOYEE-owned docs still use a type; COMPANY docs use free-form title+department below
+  documentType   DocumentType? @relation(fields: [documentTypeId], references: [id])
+  title          String?  // free-form title, used for department-scoped company documents (e.g. "Finance SOP")
+  departmentId   String?  // null = visible to all departments; set = visible only to that department
+  department     Department? @relation(fields: [departmentId], references: [id])
   employeeId     String?  // null for company-wide documents
   employee       Employee? @relation(fields: [employeeId], references: [id])
   fileUrl        String   // Supabase Storage public/signed URL

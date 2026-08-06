@@ -87,11 +87,13 @@ const WEEKDAYS = [
 function AttendanceRules() {
   const [rules, setRules] = useState([]);
   const [sites, setSites] = useState([]);
+  const [editingId, setEditingId] = useState(null);
   const emptyForm = {
     name: '',
     siteId: '',
     isDefault: false,
     workingDays: ['MON', 'TUE', 'WED', 'THU', 'FRI'],
+    remoteDays: [],
     shiftStart: '08:00',
     shiftEnd: '17:00',
     gracePeriodMinutes: 15,
@@ -118,40 +120,88 @@ function AttendanceRules() {
     setForm((f) => ({
       ...f,
       workingDays: f.workingDays.includes(code) ? f.workingDays.filter((d) => d !== code) : [...f.workingDays, code],
+      // If a day is removed from working days, it can't stay marked remote either.
+      remoteDays: f.workingDays.includes(code) ? f.remoteDays.filter((d) => d !== code) : f.remoteDays,
     }));
   }
 
-  async function create() {
+  function toggleRemoteDay(code) {
+    setForm((f) => ({
+      ...f,
+      remoteDays: f.remoteDays.includes(code) ? f.remoteDays.filter((d) => d !== code) : [...f.remoteDays, code],
+    }));
+  }
+
+  function startEdit(rule) {
+    setEditingId(rule.id);
+    setForm({
+      name: rule.name,
+      siteId: rule.siteId || '',
+      isDefault: rule.isDefault,
+      workingDays: rule.workingDays ? rule.workingDays.split(',').filter(Boolean) : [],
+      remoteDays: rule.remoteDays ? rule.remoteDays.split(',').filter(Boolean) : [],
+      shiftStart: rule.shiftStart,
+      shiftEnd: rule.shiftEnd,
+      gracePeriodMinutes: rule.gracePeriodMinutes,
+      minimumHours: rule.minimumHours,
+      halfDayHours: rule.halfDayHours,
+      overtimeThresholdHours: rule.overtimeThresholdHours,
+      gpsRadiusMeters: rule.gpsRadiusMeters,
+      weekendPolicy: rule.weekendPolicy || 'NOT_WORKING',
+      holidayPolicy: rule.holidayPolicy || 'NOT_WORKING',
+      latePolicy: rule.latePolicy || '',
+      earlyCheckoutPolicy: rule.earlyCheckoutPolicy || '',
+      requiresApproval: rule.requiresApproval,
+    });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setForm(emptyForm);
+  }
+
+  async function save() {
     if (!form.name.trim()) return alert('Please give this rule a name (e.g. "Lagos Site — Day Shift").');
     if (form.workingDays.length === 0) return alert('Select at least one working day.');
-    await api.post('/attendance-rules', {
+    const payload = {
       ...form,
       siteId: form.siteId || null,
       workingDays: form.workingDays.join(','),
+      remoteDays: form.remoteDays.join(','),
       gracePeriodMinutes: Number(form.gracePeriodMinutes),
       minimumHours: Number(form.minimumHours),
       halfDayHours: Number(form.halfDayHours),
       overtimeThresholdHours: Number(form.overtimeThresholdHours),
       gpsRadiusMeters: Number(form.gpsRadiusMeters),
-    });
-    setForm(emptyForm);
+    };
+    if (editingId) {
+      await api.patch(`/attendance-rules/${editingId}`, payload);
+    } else {
+      await api.post('/attendance-rules', payload);
+    }
+    cancelEdit();
     load();
   }
 
   async function remove(id) {
     if (!confirm('Delete this attendance rule?')) return;
     await api.delete(`/attendance-rules/${id}`);
+    if (editingId === id) cancelEdit();
     load();
   }
 
   return (
     <div className="space-y-5">
       <div className="card p-6 space-y-5">
-        <div>
-          <h2 className="font-semibold text-slate-800 dark:text-white">New Attendance Rule</h2>
-          <p className="text-xs text-slate-400 mt-1">
-            This defines how check-in/check-out is judged: what counts as on time, how many hours make a full day, and the GPS radius allowed for check-in.
-          </p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="font-semibold text-slate-800 dark:text-white">{editingId ? 'Edit Attendance Rule' : 'New Attendance Rule'}</h2>
+            <p className="text-xs text-slate-400 mt-1">
+              This defines how check-in/check-out is judged: what counts as on time, how many hours make a full day, and the GPS radius allowed for check-in.
+            </p>
+          </div>
+          {editingId && <button type="button" onClick={cancelEdit} className="text-xs text-slate-400 hover:underline">Cancel edit</button>}
         </div>
 
         <div className="grid sm:grid-cols-2 gap-4">
@@ -186,6 +236,28 @@ function AttendanceRules() {
                 {d.label}
               </button>
             ))}
+          </div>
+        </div>
+
+        <div>
+          <label className="label">Remote / work-from-home days</label>
+          <p className="text-xs text-slate-400 mb-2">For hybrid teams — pick which of the working days above are WFH. On those days, GPS check-in radius is not enforced.</p>
+          <div className="flex flex-wrap gap-2">
+            {WEEKDAYS.filter((d) => form.workingDays.includes(d.code)).map((d) => (
+              <button
+                type="button"
+                key={d.code}
+                onClick={() => toggleRemoteDay(d.code)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium border ${
+                  form.remoteDays.includes(d.code)
+                    ? 'bg-estrada-navy text-white border-transparent'
+                    : 'border-slate-300 dark:border-slate-700 text-slate-500'
+                }`}
+              >
+                🏠 {d.label}
+              </button>
+            ))}
+            {form.workingDays.length === 0 && <p className="text-xs text-slate-400">Select working days first.</p>}
           </div>
         </div>
 
@@ -225,7 +297,7 @@ function AttendanceRules() {
         <div>
           <label className="label">GPS check-in radius (meters)</label>
           <input type="number" className="input max-w-xs" placeholder="e.g. 150" value={form.gpsRadiusMeters} onChange={(e) => setForm({ ...form, gpsRadiusMeters: e.target.value })} />
-          <p className="text-xs text-slate-400 mt-1">How far from the site's pinned GPS location an employee can be and still check in.</p>
+          <p className="text-xs text-slate-400 mt-1">How far from the site's pinned GPS location an employee can be and still check in (ignored on remote/WFH days above).</p>
         </div>
 
         <div className="grid sm:grid-cols-2 gap-4">
@@ -263,7 +335,10 @@ function AttendanceRules() {
           Use as the company-wide default rule (applies to any employee whose site has no specific rule)
         </label>
 
-        <button onClick={create} className="btn-primary">Create Rule</button>
+        <div className="flex gap-2">
+          <button onClick={save} className="btn-primary">{editingId ? 'Save Changes' : 'Create Rule'}</button>
+          {editingId && <button type="button" onClick={cancelEdit} className="btn-secondary">Cancel</button>}
+        </div>
       </div>
 
       <div className="card overflow-x-auto">
@@ -273,6 +348,7 @@ function AttendanceRules() {
               <th className="text-left px-4 py-3">Name</th>
               <th className="text-left px-4 py-3">Site</th>
               <th className="text-left px-4 py-3">Working Days</th>
+              <th className="text-left px-4 py-3">Remote Days</th>
               <th className="text-left px-4 py-3">Shift</th>
               <th className="text-left px-4 py-3">Grace</th>
               <th className="text-left px-4 py-3">Default</th>
@@ -285,13 +361,17 @@ function AttendanceRules() {
                 <td className="px-4 py-3">{r.name}</td>
                 <td className="px-4 py-3">{r.site?.name || '— (default)'}</td>
                 <td className="px-4 py-3 text-xs">{r.workingDays}</td>
+                <td className="px-4 py-3 text-xs">{r.remoteDays || '—'}</td>
                 <td className="px-4 py-3">{r.shiftStart} – {r.shiftEnd}</td>
                 <td className="px-4 py-3">{r.gracePeriodMinutes}m</td>
                 <td className="px-4 py-3">{r.isDefault ? 'Yes' : 'No'}</td>
-                <td className="px-4 py-3"><button onClick={() => remove(r.id)} className="text-xs text-red-600 hover:underline">Delete</button></td>
+                <td className="px-4 py-3 flex gap-2">
+                  <button onClick={() => startEdit(r)} className="text-xs text-estrada-red hover:underline">Edit</button>
+                  <button onClick={() => remove(r.id)} className="text-xs text-red-600 hover:underline">Delete</button>
+                </td>
               </tr>
             ))}
-            {rules.length === 0 && <tr><td className="px-4 py-6 text-slate-400" colSpan={7}>No attendance rules created yet.</td></tr>}
+            {rules.length === 0 && <tr><td className="px-4 py-6 text-slate-400" colSpan={8}>No attendance rules created yet.</td></tr>}
           </tbody>
         </table>
       </div>

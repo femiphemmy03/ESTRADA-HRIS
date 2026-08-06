@@ -18,6 +18,7 @@ const ruleSchema = z.object({
   isDefault: z.boolean().optional(),
   name: z.string().min(1),
   workingDays: z.string().default('MON,TUE,WED,THU,FRI'),
+  remoteDays: z.string().optional().default(''), // csv subset of workingDays that are WFH — GPS check skipped
   shiftStart: z.string(),
   shiftEnd: z.string(),
   gracePeriodMinutes: z.number().default(15),
@@ -40,9 +41,12 @@ router.post('/', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) 
   } catch (err) { next(err); }
 });
 
+// Full edit — same validated shape as create, so a rule can be updated in place
+// instead of deleted + recreated (which would have orphaned any site pointing at it).
 router.patch('/:id', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
   try {
-    const rule = await prisma.attendanceRule.update({ where: { id: req.params.id }, data: req.body });
+    const data = ruleSchema.partial().parse(req.body);
+    const rule = await prisma.attendanceRule.update({ where: { id: req.params.id }, data });
     res.json({ rule });
   } catch (err) { next(err); }
 });

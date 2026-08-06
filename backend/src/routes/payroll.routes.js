@@ -1,5 +1,8 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import ExcelJS from 'exceljs';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { prisma } from '../lib/prisma.js';
@@ -8,6 +11,9 @@ import { computePayslip } from '../utils/payrollEngine.js';
 import { uploadToSupabase } from '../lib/supabase.js';
 import { sendPayslipReadyEmail } from '../lib/mailer.js';
 import { logActivity } from '../utils/activityLog.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const LOGO_PATH = path.join(__dirname, '..', 'assets', 'estrada-logo.png');
 
 const router = Router();
 router.use(requireAuth);
@@ -190,9 +196,31 @@ router.post('/payslips/:id/generate-pdf', requireRole(...PAYROLL_ROLES), async (
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-    let y = 800;
+    const pageWidth = 595;
+    const margin = 50;
+
+    // Logo — top right corner, for document authenticity.
+    let headerBottomY = 800;
+    try {
+      const logoBytes = fs.readFileSync(LOGO_PATH);
+      const logoImage = await pdfDoc.embedPng(logoBytes);
+      const maxLogoWidth = 110;
+      const scale = maxLogoWidth / logoImage.width;
+      const logoWidth = logoImage.width * scale;
+      const logoHeight = logoImage.height * scale;
+      const logoX = pageWidth - margin - logoWidth;
+      const logoY = 842 - 40 - logoHeight;
+      page.drawImage(logoImage, { x: logoX, y: logoY, width: logoWidth, height: logoHeight });
+      headerBottomY = logoY - 10;
+    } catch (logoErr) {
+      // If the logo asset is ever missing, don't fail payslip generation over it —
+      // just fall back to a text-only header.
+      console.error('[payslip] Could not embed logo:', logoErr.message);
+    }
+
+    let y = Math.min(800, headerBottomY);
     const draw = (text, size = 11, f = font, color = rgb(0, 0, 0)) => {
-      page.drawText(text, { x: 50, y, size, font: f, color });
+      page.drawText(text, { x: margin, y, size, font: f, color });
       y -= size + 8;
     };
 

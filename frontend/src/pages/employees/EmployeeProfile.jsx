@@ -94,6 +94,7 @@ export default function EmployeeProfile() {
             <Row label="Position" value={employee.position?.title} />
             <Row label="Client" value={employee.client?.name} />
             <Row label="Site" value={employee.site?.name} />
+            <Row label="Team Lead / Line Manager" value={employee.teamLead ? `${employee.teamLead.firstName} ${employee.teamLead.lastName}` : null} />
             <Row label="Date Hired" value={employee.dateHired ? new Date(employee.dateHired).toDateString() : '—'} />
           </InfoCard>
           <InfoCard title="Personal">
@@ -151,11 +152,13 @@ function AssignmentModal({ employee, onClose, onSaved }) {
   const [departments, setDepartments] = useState([]);
   const [positions, setPositions] = useState([]);
   const [clients, setClients] = useState([]);
+  const [teamLeads, setTeamLeads] = useState([]);
   const [form, setForm] = useState({
     departmentId: employee.departmentId || '',
     positionId: employee.positionId || '',
     clientId: employee.clientId || '',
     siteId: employee.siteId || '',
+    teamLeadId: employee.teamLeadId || '',
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -170,8 +173,24 @@ function AssignmentModal({ employee, onClose, onSaved }) {
     );
   }, []);
 
+  // Reload eligible team lead candidates whenever the selected site changes, since
+  // Team Lead-role candidates are scoped to that site (HR Admin/Super Admin always included).
+  useEffect(() => {
+    api
+      .get('/employees/eligible-team-leads', { params: { siteId: form.siteId || undefined, excludeEmployeeId: employee.id } })
+      .then((r) => setTeamLeads(r.data.candidates))
+      .catch(() => setTeamLeads([]));
+  }, [form.siteId]); // eslint-disable-line
+
   const selectedClient = clients.find((c) => c.id === form.clientId);
   const positionsInDept = form.departmentId ? positions.filter((p) => p.departmentId === form.departmentId) : positions;
+
+  function roleLabel(role) {
+    if (role === 'TEAM_LEAD') return 'Team Lead';
+    if (role === 'HR_ADMIN') return 'HR Admin';
+    if (role === 'SUPER_ADMIN') return 'Super Admin';
+    return role;
+  }
 
   async function save() {
     setSaving(true);
@@ -182,6 +201,7 @@ function AssignmentModal({ employee, onClose, onSaved }) {
         positionId: form.positionId || null,
         clientId: form.clientId || null,
         siteId: form.siteId || null,
+        teamLeadId: form.teamLeadId || null,
       });
       onSaved();
     } catch (err) {
@@ -193,10 +213,10 @@ function AssignmentModal({ employee, onClose, onSaved }) {
 
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-      <div className="card p-6 w-full max-w-md space-y-4">
+      <div className="card p-6 w-full max-w-md max-h-[90vh] overflow-y-auto space-y-4">
         <div>
           <h2 className="font-bold text-lg text-slate-900 dark:text-white">Edit Assignment</h2>
-          <p className="text-xs text-slate-400 mt-1">Change department, position, client, or site — useful for promotions, transfers, or clients with multiple locations.</p>
+          <p className="text-xs text-slate-400 mt-1">Change department, position, client, site, or team lead — useful for promotions, transfers, or clients with multiple locations.</p>
         </div>
         {error && <div className="bg-red-50 dark:bg-red-900/30 text-red-600 text-sm px-3 py-2 rounded-lg">{error}</div>}
 
@@ -232,6 +252,19 @@ function AssignmentModal({ employee, onClose, onSaved }) {
             </select>
             <p className="text-xs text-slate-400 mt-1">This determines where the employee is expected to check in for attendance.</p>
           </div>
+        </div>
+
+        <div className="pt-2 border-t border-slate-100 dark:border-slate-800">
+          <label className="label">Team Lead / Line Manager</label>
+          <select className="input" value={form.teamLeadId} onChange={(e) => setForm({ ...form, teamLeadId: e.target.value })}>
+            <option value="">No team lead — leave requests go straight to HR</option>
+            {teamLeads.map((tl) => (
+              <option key={tl.id} value={tl.id}>{tl.firstName} {tl.lastName} — {roleLabel(tl.user.role)}</option>
+            ))}
+          </select>
+          <p className="text-xs text-slate-400 mt-1">
+            This person approves this employee's leave requests first, before HR gives final approval. Team Leads shown here are limited to the site selected above; HR Admin/Super Admin are always available.
+          </p>
         </div>
 
         <div className="flex gap-2 pt-2">

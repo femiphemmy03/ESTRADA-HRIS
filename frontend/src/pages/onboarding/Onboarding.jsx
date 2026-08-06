@@ -144,6 +144,12 @@ function OnboardingSelfService() {
   async function saveBiodata(e) {
     e.preventDefault();
     await api.patch(`/employees/${employee.id}`, form);
+    setForm({
+      phone: '', gender: '', dateOfBirth: '', address: '',
+      emergencyContactName: '', emergencyContactPhone: '',
+      nextOfKinName: '', nextOfKinPhone: '',
+      bankName: '', bankAccountNumber: '', bankAccountName: '',
+    });
     setSaved(true);
     refresh();
     setTimeout(() => setSaved(false), 2000);

@@ -39,13 +39,21 @@ export default function Leave() {
   }
 
   async function managerApprove(id) {
-    await api.post(`/leave/requests/${id}/manager-approve`);
-    load();
+    try {
+      await api.post(`/leave/requests/${id}/manager-approve`);
+      load();
+    } catch (err) {
+      alert(err.response?.data?.message || 'Could not approve this request');
+    }
   }
 
   async function hrDecision(id, approve) {
-    await api.post(`/leave/requests/${id}/hr-decision`, { approve });
-    load();
+    try {
+      await api.post(`/leave/requests/${id}/hr-decision`, { approve });
+      load();
+    } catch (err) {
+      alert(err.response?.data?.message || 'Could not process this request');
+    }
   }
 
   return (
@@ -119,7 +127,10 @@ export default function Leave() {
               <div key={r.id} className="flex items-center justify-between border border-slate-100 dark:border-slate-800 rounded-lg px-4 py-3">
                 <div>
                   <p className="font-medium text-sm text-slate-800 dark:text-slate-100">{r.employee.firstName} {r.employee.lastName} · {r.leaveType.name}</p>
-                  <p className="text-xs text-slate-400">{new Date(r.startDate).toLocaleDateString()} – {new Date(r.endDate).toLocaleDateString()} ({r.daysRequested} days)</p>
+                  <p className="text-xs text-slate-400">
+                    {new Date(r.startDate).toLocaleDateString()} – {new Date(r.endDate).toLocaleDateString()} ({r.daysRequested} days)
+                    {r.status === 'PENDING_HR' && !r.employee.teamLeadId && ' · No team lead assigned, routed directly to HR'}
+                  </p>
                 </div>
                 <div className="flex gap-2">
                   {r.status === 'PENDING_MANAGER' && ['TEAM_LEAD', 'SUPER_ADMIN', 'HR_ADMIN'].includes(user.role) && (
