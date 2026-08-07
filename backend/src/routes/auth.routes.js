@@ -81,9 +81,31 @@ router.post('/invite', requireAuth, requireRole('SUPER_ADMIN', 'HR_ADMIN'), asyn
     const invitationToken = crypto.randomBytes(32).toString('hex');
     const invitationExpiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000);
 
-    const employeeCode = `EST-${new Date().getFullYear()}-${String(
-      (await prisma.employee.count()) + 1
-    ).padStart(4, '0')}`;
+    const year = new Date().getFullYear();
+
+const lastEmployee = await prisma.employee.findFirst({
+  where: {
+    employeeCode: {
+      startsWith: `EST-${year}-`,
+    },
+  },
+  orderBy: {
+    employeeCode: 'desc',
+  },
+  select: {
+    employeeCode: true,
+  },
+});
+
+let nextNumber = 1;
+
+if (lastEmployee) {
+  const parts = lastEmployee.employeeCode.split('-');
+  const last = parseInt(parts[parts.length - 1], 10);
+  nextNumber = last + 1;
+}
+
+const employeeCode = `EST-${year}-${String(nextNumber).padStart(4, '0')}`;
 
     const user = await prisma.user.create({
       data: {
