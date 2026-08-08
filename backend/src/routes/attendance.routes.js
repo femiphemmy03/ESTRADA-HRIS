@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import ExcelJS from 'exceljs';
 import { prisma } from '../lib/prisma.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { distanceInMeters } from '../utils/geo.js';
@@ -183,4 +184,105 @@ router.post('/manual', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, 
   } catch (err) { next(err); }
 });
 
+// ---------------------------------------------------------
+// Monthly attendance report — read-only aggregation, no writes.
+// Not wired into payroll calculations yet; that's a separate, later step.
+// ---------------------------------------------------------
+async function buildMonthlyReport({ month, year, siteId }) {
+  const start = new Date(year, month - 1, 1);
+  const end = new Date(year, month, 0, 23, 59, 59);
+
+  const records = await prisma.attendance.findMany({
+    where: {
+      date: { gte: start, lte: end },
+      ...(siteId ? { siteId } : {}),
+    },
+    include: {
+      employee: {
+        select: { id: true, firstName: true, lastName: true, employeeCode: true, site: { select: { name: true } } },
+      },
+    },
+  });
+
+  const byEmployee = {};
+  for (const r of records) {
+    if (!r.employee) continue;
+    const id = r.employee.id;
+    if (!byEmployee[id]) {
+      byEmployee[id] = {
+        employeeId: id,
+        firstName: r.employee.firstName,
+        lastName: r.employee.lastName,
+        employeeCode: r.employee.employeeCode,
+        siteName: r.employee.site?.name || null,
+        presentCount: 0,
+        lateCount: 0,
+        absentCount: 0,
+        halfDayCount: 0,
+        overtimeCount: 0,
+        onLeaveCount: 0,
+        remoteCount: 0,
+        totalHours: 0,
+      };
+    }
+    const row = byEmployee[id];
+    if (r.status === 'PRESENT') row.presentCount++;
+    if (r.status === 'LATE') row.lateCount++;
+    if (r.status === 'ABSENT') row.absentCount++;
+    if (r.status === 'HALF_DAY') row.halfDayCount++;
+    if (r.status === 'OVERTIME') row.overtimeCount++;
+    if (r.status === 'ON_LEAVE') row.onLeaveCount++;
+    if (r.workMode === 'REMOTE') row.remoteCount++;
+    row.totalHours += r.hoursWorked || 0;
+  }
+
+  return Object.values(byEmployee).sort((a, b) => a.lastName.localeCompare(b.lastName));
+}
+
+const reportQuerySchema = z.object({
+  month: z.coerce.number().min(1).max(12),
+  year: z.coerce.number().min(2020),
+  siteId: z.string().optional(),
+});
+
+router.get('/monthly-report', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'PAYROLL_OFFICER', 'TEAM_LEAD'), async (req, res, next) => {
+  try {
+    const { month, year, siteId } = reportQuerySchema.parse(req.query);
+    const report = await buildMonthlyReport({ month, year, siteId });
+    res.json({ report });
+  } catch (err) { next(err); }
+});
+
+router.get('/monthly-report/export', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'PAYROLL_OFFICER'), async (req, res, next) => {
+  try {
+    const { month, year, siteId } = reportQuerySchema.parse(req.query);
+    const report = await buildMonthlyReport({ month, year, siteId });
+
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet(`Attendance ${month}-${year}`);
+    sheet.columns = [
+      { header: 'Employee Code', key: 'employeeCode', width: 18 },
+      { header: 'Name', key: 'name', width: 26 },
+      { header: 'Site', key: 'siteName', width: 22 },
+      { header: 'Present', key: 'presentCount', width: 10 },
+      { header: 'Late', key: 'lateCount', width: 10 },
+      { header: 'Absent', key: 'absentCount', width: 10 },
+      { header: 'Half Day', key: 'halfDayCount', width: 10 },
+      { header: 'Overtime', key: 'overtimeCount', width: 10 },
+      { header: 'On Leave', key: 'onLeaveCount', width: 10 },
+      { header: 'Remote Days', key: 'remoteCount', width: 12 },
+      { header: 'Total Hours', key: 'totalHours', width: 12 },
+    ];
+    report.forEach((r) => {
+      sheet.addRow({ ...r, name: `${r.firstName} ${r.lastName}`, totalHours: Math.round(r.totalHours * 100) / 100 });
+    });
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename=attendance-report-${month}-${year}.xlsx`);
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (err) { next(err); }
+});
+
 export default router;
+

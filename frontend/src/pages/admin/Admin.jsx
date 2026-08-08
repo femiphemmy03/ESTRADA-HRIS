@@ -116,20 +116,29 @@ function AttendanceRules() {
   }
   useEffect(() => { load(); }, []);
 
-  function toggleDay(code) {
-    setForm((f) => ({
-      ...f,
-      workingDays: f.workingDays.includes(code) ? f.workingDays.filter((d) => d !== code) : [...f.workingDays, code],
-      // If a day is removed from working days, it can't stay marked remote either.
-      remoteDays: f.workingDays.includes(code) ? f.remoteDays.filter((d) => d !== code) : f.remoteDays,
-    }));
+  // Each day cycles through three independent states: Off -> Onsite -> Remote -> Off.
+  // workingDays (attendance expected at all) = Onsite ∪ Remote, remoteDays = Remote only —
+  // both derived from the same click so there's no separate gated step.
+  function dayState(code) {
+    if (form.remoteDays.includes(code)) return 'REMOTE';
+    if (form.workingDays.includes(code)) return 'ONSITE';
+    return 'OFF';
   }
 
-  function toggleRemoteDay(code) {
-    setForm((f) => ({
-      ...f,
-      remoteDays: f.remoteDays.includes(code) ? f.remoteDays.filter((d) => d !== code) : [...f.remoteDays, code],
-    }));
+  function cycleDay(code) {
+    setForm((f) => {
+      const state = f.remoteDays.includes(code) ? 'REMOTE' : f.workingDays.includes(code) ? 'ONSITE' : 'OFF';
+      if (state === 'OFF') {
+        // Off -> Onsite
+        return { ...f, workingDays: [...f.workingDays, code] };
+      }
+      if (state === 'ONSITE') {
+        // Onsite -> Remote (stays a working day, just marked remote)
+        return { ...f, remoteDays: [...f.remoteDays, code] };
+      }
+      // Remote -> Off
+      return { ...f, workingDays: f.workingDays.filter((d) => d !== code), remoteDays: f.remoteDays.filter((d) => d !== code) };
+    });
   }
 
   function startEdit(rule) {
@@ -220,44 +229,35 @@ function AttendanceRules() {
         </div>
 
         <div>
-          <label className="label">Working days</label>
+          <label className="label">Working pattern</label>
+          <p className="text-xs text-slate-400 mb-2">
+            Tap a day to cycle: <span className="text-slate-600 dark:text-slate-300">Off</span> → <span className="text-estrada-red font-medium">Onsite</span> → <span className="text-estrada-navy dark:text-slate-200 font-medium">🏠 Remote</span> → Off. Onsite days require GPS check-in within the site radius; Remote days don't.
+          </p>
           <div className="flex flex-wrap gap-2">
-            {WEEKDAYS.map((d) => (
-              <button
-                type="button"
-                key={d.code}
-                onClick={() => toggleDay(d.code)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium border ${
-                  form.workingDays.includes(d.code)
-                    ? 'bg-estrada-gradient text-white border-transparent'
-                    : 'border-slate-300 dark:border-slate-700 text-slate-500'
-                }`}
-              >
-                {d.label}
-              </button>
-            ))}
+            {WEEKDAYS.map((d) => {
+              const state = dayState(d.code);
+              return (
+                <button
+                  type="button"
+                  key={d.code}
+                  onClick={() => cycleDay(d.code)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition ${
+                    state === 'ONSITE'
+                      ? 'bg-estrada-gradient text-white border-transparent'
+                      : state === 'REMOTE'
+                      ? 'bg-estrada-navy text-white border-transparent'
+                      : 'border-slate-300 dark:border-slate-700 text-slate-500'
+                  }`}
+                >
+                  {state === 'REMOTE' ? '🏠 ' : ''}{d.label}
+                </button>
+              );
+            })}
           </div>
-        </div>
-
-        <div>
-          <label className="label">Remote / work-from-home days</label>
-          <p className="text-xs text-slate-400 mb-2">For hybrid teams — pick which of the working days above are WFH. On those days, GPS check-in radius is not enforced.</p>
-          <div className="flex flex-wrap gap-2">
-            {WEEKDAYS.filter((d) => form.workingDays.includes(d.code)).map((d) => (
-              <button
-                type="button"
-                key={d.code}
-                onClick={() => toggleRemoteDay(d.code)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium border ${
-                  form.remoteDays.includes(d.code)
-                    ? 'bg-estrada-navy text-white border-transparent'
-                    : 'border-slate-300 dark:border-slate-700 text-slate-500'
-                }`}
-              >
-                🏠 {d.label}
-              </button>
-            ))}
-            {form.workingDays.length === 0 && <p className="text-xs text-slate-400">Select working days first.</p>}
+          <div className="flex gap-4 mt-2 text-[11px] text-slate-400">
+            <span><span className="inline-block h-2.5 w-2.5 rounded-sm bg-estrada-gradient align-middle mr-1" /> Onsite</span>
+            <span><span className="inline-block h-2.5 w-2.5 rounded-sm bg-estrada-navy align-middle mr-1" /> Remote</span>
+            <span><span className="inline-block h-2.5 w-2.5 rounded-sm border border-slate-300 dark:border-slate-700 align-middle mr-1" /> Off</span>
           </div>
         </div>
 
