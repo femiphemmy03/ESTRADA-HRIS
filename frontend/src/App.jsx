@@ -4,6 +4,8 @@ import ProtectedRoute from './components/shared/ProtectedRoute.jsx';
 
 import Login from './pages/auth/Login.jsx';
 import SetPassword from './pages/auth/SetPassword.jsx';
+import ForgotPassword from './pages/auth/ForgotPassword.jsx';
+import ResetPassword from './pages/auth/ResetPassword.jsx';
 import Dashboard from './pages/dashboard/Dashboard.jsx';
 import EmployeesList from './pages/employees/EmployeesList.jsx';
 import EmployeeProfile from './pages/employees/EmployeeProfile.jsx';
@@ -20,6 +22,8 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/forgot-password" element={<ForgotPassword />} />
+      <Route path="/reset-password" element={<ResetPassword />} />
       <Route path="/onboarding/set-password" element={<SetPassword />} />
 
       <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>

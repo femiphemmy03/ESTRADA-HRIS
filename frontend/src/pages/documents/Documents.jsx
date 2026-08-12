@@ -1,16 +1,44 @@
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import api from '../../lib/api.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 
 export default function Documents() {
   const { employee, user } = useAuth();
+  const [searchParams] = useSearchParams();
+  const isPrivileged = ['SUPER_ADMIN', 'HR_ADMIN'].includes(user?.role);
+  const [tab, setTab] = useState(searchParams.get('tab') === 'employee' ? 'Employee Documents' : 'Company Documents');
+
+  return (
+    <div className="space-y-6">
+      <h1 className="text-xl font-bold text-slate-900 dark:text-white">Documents</h1>
+
+      {isPrivileged && (
+        <div className="flex gap-2 border-b border-slate-200 dark:border-slate-800">
+          {['Company Documents', 'Employee Documents'].map((t) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${tab === t ? 'border-estrada-red text-estrada-red' : 'border-transparent text-slate-500'}`}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {(!isPrivileged || tab === 'Company Documents') && <CompanyAndMyDocuments employee={employee} isPrivileged={isPrivileged} />}
+      {isPrivileged && tab === 'Employee Documents' && <EmployeeDocumentsMatrix />}
+    </div>
+  );
+}
+
+function CompanyAndMyDocuments({ employee, isPrivileged }) {
   const [types, setTypes] = useState([]);
   const [companyDocs, setCompanyDocs] = useState([]);
   const [myDocs, setMyDocs] = useState([]);
   const [departments, setDepartments] = useState([]);
   const [uploadingType, setUploadingType] = useState(null);
-
-  const isPrivileged = ['SUPER_ADMIN', 'HR_ADMIN'].includes(user?.role);
 
   async function load() {
     const [{ data: typesData }, { data: companyData }] = await Promise.all([
@@ -29,7 +57,7 @@ export default function Documents() {
     }
   }
 
-  useEffect(() => { load(); }, [employee, user]); // eslint-disable-line
+  useEffect(() => { load(); }, [employee, isPrivileged]); // eslint-disable-line
 
   async function uploadDocument(file, documentTypeId) {
     const formData = new FormData();
@@ -55,8 +83,6 @@ export default function Documents() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-bold text-slate-900 dark:text-white">Documents</h1>
-
       {isPrivileged && <UploadCompanyDocumentForm departments={departments} onUploaded={load} />}
 
       <div className="card p-6">
@@ -179,5 +205,78 @@ function UploadCompanyDocumentForm({ departments, onUploaded }) {
 
       <button type="submit" disabled={uploading} className="btn-primary">{uploading ? 'Uploading…' : 'Upload Document'}</button>
     </form>
+  );
+}
+
+function EmployeeDocumentsMatrix() {
+  const [employees, setEmployees] = useState([]);
+  const [documentTypes, setDocumentTypes] = useState([]);
+  const [matrix, setMatrix] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [q, setQ] = useState('');
+
+  useEffect(() => {
+    api.get('/documents/employee-matrix').then((r) => {
+      setEmployees(r.data.employees);
+      setDocumentTypes(r.data.documentTypes);
+      setMatrix(r.data.matrix);
+      setLoading(false);
+    });
+  }, []);
+
+  const filtered = q
+    ? employees.filter((e) => `${e.firstName} ${e.lastName} ${e.employeeCode}`.toLowerCase().includes(q.toLowerCase()))
+    : employees;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <input className="input max-w-xs" placeholder="Search employee…" value={q} onChange={(e) => setQ(e.target.value)} />
+        <p className="text-xs text-slate-400">Click any ✓ to preview/download that document.</p>
+      </div>
+
+      <div className="card overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 dark:bg-slate-800/50 text-slate-500 dark:text-slate-400">
+            <tr>
+              <th className="text-left px-4 py-3 sticky left-0 bg-slate-50 dark:bg-slate-800/50">Employee</th>
+              <th className="text-left px-4 py-3">Department</th>
+              {documentTypes.map((t) => (
+                <th key={t.id} className="text-center px-4 py-3 whitespace-nowrap">{t.name}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+            {loading ? (
+              <tr><td className="px-4 py-6 text-slate-400" colSpan={documentTypes.length + 2}>Loading…</td></tr>
+            ) : filtered.length === 0 ? (
+              <tr><td className="px-4 py-6 text-slate-400" colSpan={documentTypes.length + 2}>No employees found.</td></tr>
+            ) : (
+              filtered.map((emp) => (
+                <tr key={emp.id}>
+                  <td className="px-4 py-3 sticky left-0 bg-white dark:bg-slate-900">
+                    <p className="font-medium text-slate-800 dark:text-slate-100">{emp.firstName} {emp.lastName}</p>
+                    <p className="text-xs text-slate-400">{emp.employeeCode}</p>
+                  </td>
+                  <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{emp.department?.name || '—'}</td>
+                  {documentTypes.map((t) => {
+                    const doc = matrix[emp.id]?.[t.id];
+                    return (
+                      <td key={t.id} className="px-4 py-3 text-center">
+                        {doc ? (
+                          <a href={doc.fileUrl} target="_blank" rel="noreferrer" title={doc.fileName} className="text-green-600 hover:underline font-medium">✓ View</a>
+                        ) : (
+                          <span className="text-slate-300 dark:text-slate-700">—</span>
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }

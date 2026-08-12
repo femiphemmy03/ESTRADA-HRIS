@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate, Navigate } from 'react-router-dom';
+import { useNavigate, Navigate, Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
 
 export default function Login() {
@@ -41,7 +41,10 @@ export default function Login() {
             <input type="email" required className="input" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@estradaintl.com" />
           </div>
           <div>
-            <label className="label">Password</label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="label !mb-0">Password</label>
+              <Link to="/forgot-password" className="text-xs text-estrada-red hover:underline">Forgot password?</Link>
+            </div>
             <input type="password" required className="input" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
           </div>
           <button type="submit" disabled={loading} className="btn-primary w-full">

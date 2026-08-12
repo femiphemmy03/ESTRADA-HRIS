@@ -50,12 +50,12 @@ export default function Dashboard() {
 
       {stats && (
         <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
-          <StatCard label="Total Employees" value={stats.totalEmployees} icon="👥" />
-          <StatCard label="Active" value={stats.activeEmployees} icon="✅" />
-          <StatCard label="Onboarding" value={stats.onboardingCount} icon="📋" />
-          <StatCard label="Present Today" value={stats.todayPresent} icon="📍" />
-          <StatCard label="Pending Leave" value={stats.pendingLeaves} icon="🌴" accent />
-          <StatCard label="Active Clients" value={stats.clientsCount} icon="🏢" />
+          <StatCard label="Total Employees" value={stats.totalEmployees} icon="👥" to="/employees" />
+          <StatCard label="Active" value={stats.activeEmployees} icon="✅" to="/employees?status=ACTIVE" />
+          <StatCard label="Onboarding" value={stats.onboardingCount} icon="📋" to="/onboarding" />
+          <StatCard label="Present Today" value={stats.todayPresent} icon="📍" to="/attendance?status=PRESENT" />
+          <StatCard label="Pending Leave" value={stats.pendingLeaves} icon="🌴" accent to="/leave" />
+          <StatCard label="Active Clients" value={stats.clientsCount} icon="🏢" to="/clients" />
         </div>
       )}
 

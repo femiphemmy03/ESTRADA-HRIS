@@ -1,43 +1,71 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import api from '../../lib/api.js';
 import StatusBadge from '../../components/shared/StatusBadge.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 
+const STATUSES = ['ONBOARDING', 'ACTIVE', 'ON_LEAVE', 'SUSPENDED', 'EXITING', 'EXITED'];
+
 export default function EmployeesList() {
   const { user } = useAuth();
+  const [searchParams] = useSearchParams();
   const [employees, setEmployees] = useState([]);
   const [q, setQ] = useState('');
+  const [status, setStatus] = useState(searchParams.get('status') || '');
   const [loading, setLoading] = useState(true);
   const [showInvite, setShowInvite] = useState(false);
+  const isPrivileged = ['SUPER_ADMIN', 'HR_ADMIN'].includes(user?.role);
 
-  async function load() {
+  async function load(statusOverride) {
     setLoading(true);
-    const { data } = await api.get('/employees', { params: { q } });
+    const { data } = await api.get('/employees', {
+      params: { q, employmentStatus: (statusOverride ?? status) || undefined },
+    });
     setEmployees(data.employees);
     setLoading(false);
   }
 
-  useEffect(() => { load(); }, []); // eslint-disable-line
+  // Deep-link support: /employees?status=ACTIVE from the dashboard stat cards.
+  useEffect(() => {
+    const initial = searchParams.get('status') || '';
+    setStatus(initial);
+    load(initial);
+  }, []); // eslint-disable-line
 
   function handleSearch(e) {
     e.preventDefault();
     load();
   }
 
+  function handleStatusChange(v) {
+    setStatus(v);
+    load(v);
+  }
+
   return (
     <div className="space-y-5">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <h1 className="text-xl font-bold text-slate-900 dark:text-white">Employees</h1>
-        {['SUPER_ADMIN', 'HR_ADMIN'].includes(user?.role) && (
-          <button onClick={() => setShowInvite(true)} className="btn-primary">+ Invite Employee</button>
-        )}
+        <div className="flex gap-2">
+          {isPrivileged && (
+            <Link to="/documents?tab=employee" className="btn-secondary">📁 View All Documents</Link>
+          )}
+          {isPrivileged && (
+            <button onClick={() => setShowInvite(true)} className="btn-primary">+ Invite Employee</button>
+          )}
+        </div>
       </div>
 
-      <form onSubmit={handleSearch} className="flex gap-2">
-        <input className="input max-w-xs" placeholder="Search name or employee code…" value={q} onChange={(e) => setQ(e.target.value)} />
-        <button className="btn-secondary" type="submit">Search</button>
-      </form>
+      <div className="flex flex-wrap gap-2">
+        <form onSubmit={handleSearch} className="flex gap-2">
+          <input className="input max-w-xs" placeholder="Search name or employee code…" value={q} onChange={(e) => setQ(e.target.value)} />
+          <button className="btn-secondary" type="submit">Search</button>
+        </form>
+        <select className="input max-w-xs" value={status} onChange={(e) => handleStatusChange(e.target.value)}>
+          <option value="">All statuses</option>
+          {STATUSES.map((s) => <option key={s} value={s}>{s.replace(/_/g, ' ')}</option>)}
+        </select>
+      </div>
 
       <div className="card overflow-x-auto">
         <table className="w-full text-sm">
@@ -73,7 +101,7 @@ export default function EmployeesList() {
         </table>
       </div>
 
-      {showInvite && <InviteModal onClose={() => setShowInvite(false)} onCreated={load} />}
+      {showInvite && <InviteModal onClose={() => setShowInvite(false)} onCreated={() => load()} />}
     </div>
   );
 }

@@ -108,6 +108,8 @@ model User {
   mustSetPassword Boolean @default(true)
   invitationToken String? @unique
   invitationExpiresAt DateTime?
+  passwordResetToken String? @unique
+  passwordResetExpiresAt DateTime?
   refreshTokenVersion Int @default(0)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt

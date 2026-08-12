@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import api from '../../lib/api.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import StatusBadge from '../../components/shared/StatusBadge.jsx';
@@ -138,11 +139,12 @@ function MyAttendanceHistory() {
 }
 
 function AttendanceTable() {
+  const [searchParams] = useSearchParams();
   const [rows, setRows] = useState([]);
   const [sites, setSites] = useState([]);
   const [loading, setLoading] = useState(true);
   const todayStr = new Date().toISOString().slice(0, 10);
-  const [filters, setFilters] = useState({ from: todayStr, to: todayStr, siteId: '', status: '' });
+  const [filters, setFilters] = useState({ from: todayStr, to: todayStr, siteId: '', status: searchParams.get('status') || '' });
 
   async function load() {
     setLoading(true);

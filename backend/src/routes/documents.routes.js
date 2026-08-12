@@ -85,7 +85,45 @@ router.get('/', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// ---------- Company documents — free-form title + department scoping, no preset types ----------
+// ---------- Employee document matrix — HR/Admin overview of every employee's uploads ----------
+// One set of 3 queries total (employees, doc types, documents), not one call per employee.
+router.get('/employee-matrix', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
+  try {
+    const employees = await prisma.employee.findMany({
+      where: { archived: false },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        employeeCode: true,
+        department: { select: { name: true } },
+      },
+      orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
+    });
+
+    const documentTypes = await prisma.documentType.findMany({
+      where: { owner: 'EMPLOYEE' },
+      orderBy: { name: 'asc' },
+    });
+
+    const documents = await prisma.document.findMany({
+      where: { employeeId: { not: null }, documentTypeId: { not: null } },
+      select: { employeeId: true, documentTypeId: true, fileUrl: true, fileName: true, uploadedAt: true },
+      orderBy: { uploadedAt: 'desc' },
+    });
+
+    // Keep only the most recent upload per (employee, documentType) pair.
+    const matrix = {};
+    for (const d of documents) {
+      if (!matrix[d.employeeId]) matrix[d.employeeId] = {};
+      if (!matrix[d.employeeId][d.documentTypeId]) matrix[d.employeeId][d.documentTypeId] = d;
+    }
+
+    res.json({ employees, documentTypes, matrix });
+  } catch (err) { next(err); }
+});
+
+
 // HR/Admin uploads with a plain title and picks a department (or leaves it for "all departments").
 // Employees only ever see docs that are either department-wide-none (visible to everyone) or match
 // their own department. HR/Admin see everything, across all departments, for management purposes.

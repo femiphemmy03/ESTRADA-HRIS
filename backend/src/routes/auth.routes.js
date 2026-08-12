@@ -4,7 +4,7 @@ import crypto from 'crypto';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../utils/jwt.js';
-import { sendOnboardingInvite } from '../lib/mailer.js';
+import { sendOnboardingInvite, sendPasswordResetEmail } from '../lib/mailer.js';
 import { logActivity } from '../utils/activityLog.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { env } from '../config/env.js';
@@ -83,29 +83,29 @@ router.post('/invite', requireAuth, requireRole('SUPER_ADMIN', 'HR_ADMIN'), asyn
 
     const year = new Date().getFullYear();
 
-const lastEmployee = await prisma.employee.findFirst({
-  where: {
-    employeeCode: {
-      startsWith: `EST-${year}-`,
-    },
-  },
-  orderBy: {
-    employeeCode: 'desc',
-  },
-  select: {
-    employeeCode: true,
-  },
-});
+    const lastEmployee = await prisma.employee.findFirst({
+      where: {
+        employeeCode: {
+          startsWith: `EST-${year}-`,
+        },
+      },
+      orderBy: {
+        employeeCode: 'desc',
+      },
+      select: {
+        employeeCode: true,
+      },
+    });
 
-let nextNumber = 1;
+    let nextNumber = 1;
 
-if (lastEmployee) {
-  const parts = lastEmployee.employeeCode.split('-');
-  const last = parseInt(parts[parts.length - 1], 10);
-  nextNumber = last + 1;
-}
+    if (lastEmployee) {
+      const parts = lastEmployee.employeeCode.split('-');
+      const last = parseInt(parts[parts.length - 1], 10);
+      nextNumber = last + 1;
+    }
 
-const employeeCode = `EST-${year}-${String(nextNumber).padStart(4, '0')}`;
+    const employeeCode = `EST-${year}-${String(nextNumber).padStart(4, '0')}`;
 
     const user = await prisma.user.create({
       data: {
@@ -166,10 +166,10 @@ router.post('/set-password', async (req, res, next) => {
       return res.status(400).json({ message: 'This invitation link is not valid. Please check the link or ask HR to resend your invitation.' });
     }
     if (!user.mustSetPassword) {
-      return res.status(400).json({ message: 'This invitation link has already been used. Please log in instead — if you need a password reset, contact HR.' });
+      return res.status(400).json({ message: 'This invitation link has already been used. Please log in instead — if you need a password reset, use "Forgot password" on the login page.' });
     }
     if (!user.invitationExpiresAt || user.invitationExpiresAt < new Date()) {
-      return res.status(400).json({ message: 'This invitation link has expired (links are valid for 72 hours). Please ask HR to resend your invitation.' });
+      return res.status(400).json({ message: 'This invitation link has expired (links are valid for 72 hours). Please use "Forgot password" on the login page to get a new one.' });
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
@@ -187,6 +187,90 @@ router.post('/set-password', async (req, res, next) => {
       description: 'Employee created their password and logged in for the first time',
     });
     res.json({ message: 'Password set successfully. You may now log in.' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------
+// Forgot / Reset password
+// ---------------------------------------------------------------
+// Two distinct cases, both triggered by the same "Forgot password?" form:
+//  1. The user never set a password at all (invite expired or was never opened) —
+//     this resends a fresh onboarding invite using the existing invitation flow.
+//  2. The user has a real password and forgot it — this issues a separate,
+//     short-lived reset token so it can never collide with onboarding logic.
+// Both branches respond with the same generic message so this endpoint can't be
+// used to figure out which email addresses have accounts in the system.
+const forgotPasswordSchema = z.object({ email: z.string().email() });
+const GENERIC_MESSAGE = 'If an account exists for that email, we\'ve sent instructions to it.';
+
+router.post('/forgot-password', async (req, res, next) => {
+  try {
+    const { email } = forgotPasswordSchema.parse(req.body);
+    const user = await prisma.user.findUnique({ where: { email }, include: { employee: true } });
+
+    if (user && user.isActive) {
+      if (!user.passwordHash || user.mustSetPassword) {
+        // Never completed onboarding — resend the invitation with a fresh token.
+        const invitationToken = crypto.randomBytes(32).toString('hex');
+        const invitationExpiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000);
+        await prisma.user.update({ where: { id: user.id }, data: { invitationToken, invitationExpiresAt } });
+        const invitationLink = `${env.frontendUrl}/onboarding/set-password?token=${invitationToken}`;
+        await sendOnboardingInvite({
+          to: user.email,
+          firstName: user.employee?.firstName || 'there',
+          invitationLink,
+        });
+      } else {
+        // Has a real password — issue a short-lived reset token.
+        const passwordResetToken = crypto.randomBytes(32).toString('hex');
+        const passwordResetExpiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+        await prisma.user.update({ where: { id: user.id }, data: { passwordResetToken, passwordResetExpiresAt } });
+        const resetLink = `${env.frontendUrl}/reset-password?token=${passwordResetToken}`;
+        await sendPasswordResetEmail({
+          to: user.email,
+          firstName: user.employee?.firstName || 'there',
+          resetLink,
+        });
+      }
+    }
+
+    res.json({ message: GENERIC_MESSAGE });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const resetPasswordSchema = z.object({
+  token: z.string(),
+  password: z.string().min(8),
+});
+
+router.post('/reset-password', async (req, res, next) => {
+  try {
+    const { token, password } = resetPasswordSchema.parse(req.body);
+    const user = await prisma.user.findUnique({ where: { passwordResetToken: token } });
+
+    if (!user) {
+      return res.status(400).json({ message: 'This reset link is not valid. Please request a new one.' });
+    }
+    if (!user.passwordResetExpiresAt || user.passwordResetExpiresAt < new Date()) {
+      return res.status(400).json({ message: 'This reset link has expired (valid for 1 hour). Please request a new one.' });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordHash,
+        passwordResetToken: null,
+        passwordResetExpiresAt: null,
+        refreshTokenVersion: { increment: 1 }, // logs out any other active sessions on this account
+      },
+    });
+
+    res.json({ message: 'Password reset successfully. You may now log in.' });
   } catch (err) {
     next(err);
   }
