@@ -25,7 +25,6 @@ export default function EmployeesList() {
     setLoading(false);
   }
 
-  // Deep-link support: /employees?status=ACTIVE from the dashboard stat cards.
   useEffect(() => {
     const initial = searchParams.get('status') || '';
     setStatus(initial);
@@ -153,6 +152,7 @@ function InviteModal({ onClose, onCreated }) {
               <option value="EMPLOYEE">Employee</option>
               <option value="TEAM_LEAD">Team Lead</option>
               <option value="PAYROLL_OFFICER">Payroll Officer</option>
+              <option value="HR_MANAGER">HR Manager</option>
               <option value="HR_ADMIN">HR Admin</option>
             </select>
           </div>

@@ -29,7 +29,7 @@ router.get('/users', requireRole('SUPER_ADMIN'), async (req, res, next) => {
 
 router.patch('/users/:id/role', requireRole('SUPER_ADMIN'), async (req, res, next) => {
   try {
-    const { role } = z.object({ role: z.enum(['SUPER_ADMIN', 'HR_ADMIN', 'PAYROLL_OFFICER', 'TEAM_LEAD', 'EMPLOYEE']) }).parse(req.body);
+    const { role } = z.object({ role: z.enum(['SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER', 'PAYROLL_OFFICER', 'TEAM_LEAD', 'EMPLOYEE']) }).parse(req.body);
     const user = await prisma.user.update({ where: { id: req.params.id }, data: { role } });
     res.json({ user });
   } catch (err) { next(err); }

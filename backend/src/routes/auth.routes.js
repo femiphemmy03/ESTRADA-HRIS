@@ -68,7 +68,7 @@ const inviteSchema = z.object({
   email: z.string().email(),
   firstName: z.string().min(1),
   lastName: z.string().min(1),
-  role: z.enum(['HR_ADMIN', 'PAYROLL_OFFICER', 'TEAM_LEAD', 'EMPLOYEE']).default('EMPLOYEE'),
+  role: z.enum(['HR_ADMIN', 'HR_MANAGER', 'PAYROLL_OFFICER', 'TEAM_LEAD', 'EMPLOYEE']).default('EMPLOYEE'),
   departmentId: z.string().optional(),
   positionId: z.string().optional(),
   clientId: z.string().optional(),
@@ -195,13 +195,6 @@ router.post('/set-password', async (req, res, next) => {
 // ---------------------------------------------------------------
 // Forgot / Reset password
 // ---------------------------------------------------------------
-// Two distinct cases, both triggered by the same "Forgot password?" form:
-//  1. The user never set a password at all (invite expired or was never opened) —
-//     this resends a fresh onboarding invite using the existing invitation flow.
-//  2. The user has a real password and forgot it — this issues a separate,
-//     short-lived reset token so it can never collide with onboarding logic.
-// Both branches respond with the same generic message so this endpoint can't be
-// used to figure out which email addresses have accounts in the system.
 const forgotPasswordSchema = z.object({ email: z.string().email() });
 const GENERIC_MESSAGE = 'If an account exists for that email, we\'ve sent instructions to it.';
 
@@ -212,7 +205,6 @@ router.post('/forgot-password', async (req, res, next) => {
 
     if (user && user.isActive) {
       if (!user.passwordHash || user.mustSetPassword) {
-        // Never completed onboarding — resend the invitation with a fresh token.
         const invitationToken = crypto.randomBytes(32).toString('hex');
         const invitationExpiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000);
         await prisma.user.update({ where: { id: user.id }, data: { invitationToken, invitationExpiresAt } });
@@ -223,9 +215,8 @@ router.post('/forgot-password', async (req, res, next) => {
           invitationLink,
         });
       } else {
-        // Has a real password — issue a short-lived reset token.
         const passwordResetToken = crypto.randomBytes(32).toString('hex');
-        const passwordResetExpiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+        const passwordResetExpiresAt = new Date(Date.now() + 60 * 60 * 1000);
         await prisma.user.update({ where: { id: user.id }, data: { passwordResetToken, passwordResetExpiresAt } });
         const resetLink = `${env.frontendUrl}/reset-password?token=${passwordResetToken}`;
         await sendPasswordResetEmail({
@@ -266,7 +257,7 @@ router.post('/reset-password', async (req, res, next) => {
         passwordHash,
         passwordResetToken: null,
         passwordResetExpiresAt: null,
-        refreshTokenVersion: { increment: 1 }, // logs out any other active sessions on this account
+        refreshTokenVersion: { increment: 1 },
       },
     });
 

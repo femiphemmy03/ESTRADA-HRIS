@@ -18,6 +18,7 @@ datasource db {
 enum Role {
   SUPER_ADMIN
   HR_ADMIN
+  HR_MANAGER
   PAYROLL_OFFICER
   TEAM_LEAD
   EMPLOYEE
@@ -83,8 +84,11 @@ enum LeaveRequestStatus {
 enum PayrollRunStatus {
   DRAFT
   REVIEW
+  PENDING_HR_MANAGER
+  PENDING_SUPER_ADMIN
   APPROVED
   PAID
+  REJECTED
 }
 
 enum ExitStatus {
@@ -282,9 +286,9 @@ model AttendanceRule {
   halfDayHours       Float    @default(4)
   overtimeThresholdHours Float @default(9)
   gpsRadiusMeters    Int      @default(150)
-  latePolicy         String?  // free text / JSON-encoded policy description
+  latePolicy         String?
   earlyCheckoutPolicy String?
-  weekendPolicy      String?  // e.g. "NOT_WORKING" | "OVERTIME" | "REGULAR"
+  weekendPolicy      String?
   holidayPolicy      String?
   requiresApproval   Boolean  @default(false)
   createdAt          DateTime @default(now())
@@ -317,7 +321,7 @@ model Attendance {
   checkOutLng   Float?
   hoursWorked   Float?
   status        AttendanceStatus  @default(ABSENT)
-  workMode      String            @default("ONSITE") // "ONSITE" | "REMOTE" — REMOTE skips GPS radius validation
+  workMode      String            @default("ONSITE") // "ONSITE" | "REMOTE"
   notes         String?
   createdAt     DateTime          @default(now())
 
@@ -378,7 +382,7 @@ model SalaryStructure {
   employeeId   String   @unique
   employee     Employee @relation(fields: [employeeId], references: [id])
   basicSalary  Float
-  allowances   Json     @default("[]") // [{ name, amount }]
+  allowances   Json     @default("[]") // [{ name, amount }] — Housing/Transport included by default (BHT)
   deductions   Json     @default("[]") // [{ name, amount }]
   effectiveFrom DateTime @default(now())
   updatedAt    DateTime @updatedAt
@@ -386,9 +390,9 @@ model SalaryStructure {
 
 model PayrollSettings {
   id              String   @id @default(uuid())
-  name            String   // e.g. "PAYE 2026", "Pension Employee 8%"
+  name            String
   type            String   // PAYE | PENSION_EMPLOYEE | PENSION_EMPLOYER | NHF | CUSTOM
-  config          Json     // rule config, e.g. tax bands or flat percentage
+  config          Json
   effectiveFrom   DateTime
   effectiveTo     DateTime?
   isActive        Boolean  @default(true)
@@ -400,9 +404,18 @@ model PayrollRun {
   month       Int
   year        Int
   status      PayrollRunStatus @default(DRAFT)
-  reviewedById String?
-  approvedById String?
-  approvedAt  DateTime?
+
+  // Two-tier approval trail: submitted (by Payroll Officer/HR Admin/Super Admin) ->
+  // HR Manager approves -> Super Admin gives final approval, at which point payslip
+  // PDFs are generated automatically and become visible on each employee's payroll tab.
+  submittedById         String?
+  submittedAt           DateTime?
+  hrManagerApprovedById String?
+  hrManagerApprovedAt   DateTime?
+  approvedById          String? // Super Admin final approval
+  approvedAt            DateTime?
+  rejectionReason       String?
+
   createdAt   DateTime @default(now())
   payslips    Payslip[]
 
@@ -423,7 +436,7 @@ model Payslip {
   pensionEmployee Float  @default(0)
   nhf           Float    @default(0)
   netPay        Float
-  breakdown     Json     // full itemized breakdown
+  breakdown     Json
   pdfUrl        String?
   createdAt     DateTime @default(now())
 
@@ -438,7 +451,7 @@ model Loan {
   monthlyDeduction Float
   balanceRemaining Float
   reason       String?
-  status       String   @default("ACTIVE") // ACTIVE | CLOSED
+  status       String   @default("ACTIVE")
   createdAt    DateTime @default(now())
 }
 
@@ -448,7 +461,7 @@ model SalaryAdvance {
   employee     Employee @relation(fields: [employeeId], references: [id])
   amount       Float
   reason       String?
-  status       String   @default("PENDING") // PENDING | APPROVED | REJECTED | RECOVERED
+  status       String   @default("PENDING")
   createdAt    DateTime @default(now())
 }
 
@@ -467,16 +480,16 @@ model DocumentType {
 
 model Document {
   id             String   @id @default(uuid())
-  documentTypeId String?  // optional now: EMPLOYEE-owned docs still use a type; COMPANY docs use free-form title+department below
+  documentTypeId String?
   documentType   DocumentType? @relation(fields: [documentTypeId], references: [id])
-  title          String?  // free-form title, used for department-scoped company documents (e.g. "Finance SOP")
-  departmentId   String?  // null = visible to all departments; set = visible only to that department
+  title          String?
+  departmentId   String?
   department     Department? @relation(fields: [departmentId], references: [id])
-  employeeId     String?  // null for company-wide documents
+  employeeId     String?
   employee       Employee? @relation(fields: [employeeId], references: [id])
-  fileUrl        String   // Supabase Storage public/signed URL
+  fileUrl        String
   fileName       String
-  storagePath    String   // path within the Supabase bucket
+  storagePath    String
   ackStatus      DocumentAckStatus @default(NOT_REQUIRED)
   acknowledgedAt DateTime?
   expiryDate     DateTime?
@@ -534,7 +547,7 @@ model ActivityLog {
   employee    Employee? @relation("SubjectLogs", fields: [employeeId], references: [id])
   actorUserId String?
   actor       User?    @relation("ActorLogs", fields: [actorUserId], references: [id])
-  action      String   // e.g. "OFFER_ACCEPTED", "INVITATION_SENT", "PAYROLL_PROCESSED"
+  action      String
   description String
   metadata    Json?
   createdAt   DateTime @default(now())

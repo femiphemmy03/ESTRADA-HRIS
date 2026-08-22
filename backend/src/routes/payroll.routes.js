@@ -1,10 +1,10 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import ExcelJS from 'exceljs';
+import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import ExcelJS from 'exceljs';
-import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { prisma } from '../lib/prisma.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { computePayslip } from '../utils/payrollEngine.js';
@@ -18,8 +18,12 @@ const LOGO_PATH = path.join(__dirname, '..', 'assets', 'estrada-logo.png');
 const router = Router();
 router.use(requireAuth);
 const PAYROLL_ROLES = ['SUPER_ADMIN', 'HR_ADMIN', 'PAYROLL_OFFICER'];
+const APPROVAL_ROLES = ['SUPER_ADMIN', 'HR_MANAGER']; // who can view/act on runs pending approval
 
 // ---------- Salary Structure ----------
+// Allowances is a generic [{name, amount}] array — Housing/Transport are just entries
+// in it by convention (enforced on the frontend), so no schema/backend change needed
+// to support the "Basic + Housing + Transport" (BHT) default structure.
 const salarySchema = z.object({
   employeeId: z.string(),
   basicSalary: z.number(),
@@ -118,18 +122,22 @@ router.post('/runs', requireRole(...PAYROLL_ROLES), async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.get('/runs', requireRole(...PAYROLL_ROLES), async (req, res, next) => {
+router.get('/runs', requireRole(...PAYROLL_ROLES, ...APPROVAL_ROLES), async (req, res, next) => {
   try {
     const runs = await prisma.payrollRun.findMany({ orderBy: [{ year: 'desc' }, { month: 'desc' }] });
     res.json({ runs });
   } catch (err) { next(err); }
 });
 
-// Process/compute payslips for every active employee with a salary structure
+// Process/compute payslips for every active employee with a salary structure.
+// This only computes numbers — it does NOT generate PDFs or submit for approval.
 router.post('/runs/:id/process', requireRole(...PAYROLL_ROLES), async (req, res, next) => {
   try {
     const run = await prisma.payrollRun.findUnique({ where: { id: req.params.id } });
     if (!run) return res.status(404).json({ message: 'Payroll run not found' });
+    if (!['DRAFT', 'REVIEW', 'REJECTED'].includes(run.status)) {
+      return res.status(400).json({ message: 'This run has already been submitted for approval and can no longer be reprocessed. Reject it back to Review first if changes are needed.' });
+    }
 
     const employees = await prisma.employee.findMany({
       where: { employmentStatus: 'ACTIVE', salaryStructure: { isNot: null } },
@@ -154,17 +162,105 @@ router.post('/runs/:id/process', requireRole(...PAYROLL_ROLES), async (req, res,
   } catch (err) { next(err); }
 });
 
-router.post('/runs/:id/approve', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
+// ---- Two-tier approval chain ----
+// REVIEW -> (submit) -> PENDING_HR_MANAGER -> (HR Manager approves) -> PENDING_SUPER_ADMIN
+//        -> (Super Admin approves) -> APPROVED [payslip PDFs auto-generate here]
+// Any pending stage can be rejected back to REVIEW with a reason.
+
+router.post('/runs/:id/submit-for-approval', requireRole(...PAYROLL_ROLES), async (req, res, next) => {
   try {
-    const run = await prisma.payrollRun.update({
-      where: { id: req.params.id },
-      data: { status: 'APPROVED', approvedById: req.user.employee?.id, approvedAt: new Date() },
+    const run = await prisma.payrollRun.findUnique({ where: { id: req.params.id } });
+    if (!run) return res.status(404).json({ message: 'Payroll run not found' });
+    if (run.status !== 'REVIEW') {
+      return res.status(400).json({ message: 'Only a processed run in Review status can be submitted for approval.' });
+    }
+    const updated = await prisma.payrollRun.update({
+      where: { id: run.id },
+      data: {
+        status: 'PENDING_HR_MANAGER',
+        submittedById: req.user.employee?.id,
+        submittedAt: new Date(),
+        rejectionReason: null,
+      },
     });
-    res.json({ run });
+    res.json({ run: updated });
   } catch (err) { next(err); }
 });
 
-router.get('/runs/:id/payslips', requireRole(...PAYROLL_ROLES), async (req, res, next) => {
+router.post('/runs/:id/hr-manager-approve', requireRole('HR_MANAGER', 'SUPER_ADMIN'), async (req, res, next) => {
+  try {
+    const run = await prisma.payrollRun.findUnique({ where: { id: req.params.id } });
+    if (!run) return res.status(404).json({ message: 'Payroll run not found' });
+    if (run.status !== 'PENDING_HR_MANAGER') {
+      return res.status(400).json({ message: 'This run is not awaiting HR Manager approval.' });
+    }
+    const updated = await prisma.payrollRun.update({
+      where: { id: run.id },
+      data: {
+        status: 'PENDING_SUPER_ADMIN',
+        hrManagerApprovedById: req.user.employee?.id,
+        hrManagerApprovedAt: new Date(),
+      },
+    });
+    await logActivity({ actorUserId: req.user.id, action: 'PAYROLL_HR_MANAGER_APPROVED', description: `Payroll run ${run.month}/${run.year} approved by HR Manager, sent to Super Admin` });
+    res.json({ run: updated });
+  } catch (err) { next(err); }
+});
+
+router.post('/runs/:id/final-approve', requireRole('SUPER_ADMIN'), async (req, res, next) => {
+  try {
+    const run = await prisma.payrollRun.findUnique({ where: { id: req.params.id } });
+    if (!run) return res.status(404).json({ message: 'Payroll run not found' });
+    if (run.status !== 'PENDING_SUPER_ADMIN') {
+      return res.status(400).json({ message: 'This run is not awaiting final approval.' });
+    }
+
+    await prisma.payrollRun.update({
+      where: { id: run.id },
+      data: { status: 'APPROVED', approvedById: req.user.employee?.id, approvedAt: new Date() },
+    });
+
+    // Auto-generate every payslip's PDF now that the run is fully approved —
+    // this is what makes them appear on each employee's "My Payslips" tab.
+    const payslips = await prisma.payslip.findMany({
+      where: { payrollRunId: run.id },
+      include: { employee: { include: { user: true } }, payrollRun: true },
+    });
+
+    const generated = [];
+    for (const payslip of payslips) {
+      try {
+        const updated = await generateAndStorePayslipPdf(payslip);
+        generated.push(updated);
+      } catch (pdfErr) {
+        console.error(`[payroll] Failed to generate PDF for payslip ${payslip.id}:`, pdfErr.message);
+      }
+    }
+
+    await logActivity({ actorUserId: req.user.id, action: 'PAYROLL_FINAL_APPROVED', description: `Payroll run ${run.month}/${run.year} given final approval by Super Admin — ${generated.length} payslip(s) generated` });
+
+    res.json({ run: { ...run, status: 'APPROVED' }, payslipsGenerated: generated.length });
+  } catch (err) { next(err); }
+});
+
+router.post('/runs/:id/reject', requireRole('HR_MANAGER', 'SUPER_ADMIN'), async (req, res, next) => {
+  try {
+    const { reason } = z.object({ reason: z.string().min(1) }).parse(req.body);
+    const run = await prisma.payrollRun.findUnique({ where: { id: req.params.id } });
+    if (!run) return res.status(404).json({ message: 'Payroll run not found' });
+    if (!['PENDING_HR_MANAGER', 'PENDING_SUPER_ADMIN'].includes(run.status)) {
+      return res.status(400).json({ message: 'This run is not in a state that can be rejected.' });
+    }
+    const updated = await prisma.payrollRun.update({
+      where: { id: run.id },
+      data: { status: 'REVIEW', rejectionReason: reason },
+    });
+    await logActivity({ actorUserId: req.user.id, action: 'PAYROLL_REJECTED', description: `Payroll run ${run.month}/${run.year} sent back to Review: ${reason}` });
+    res.json({ run: updated });
+  } catch (err) { next(err); }
+});
+
+router.get('/runs/:id/payslips', requireRole(...PAYROLL_ROLES, ...APPROVAL_ROLES), async (req, res, next) => {
   try {
     const payslips = await prisma.payslip.findMany({
       where: { payrollRunId: req.params.id },
@@ -174,91 +270,95 @@ router.get('/runs/:id/payslips', requireRole(...PAYROLL_ROLES), async (req, res,
   } catch (err) { next(err); }
 });
 
+// Only APPROVED (or later PAID) runs' payslips are visible to the employee — pre-approval
+// figures stay internal until they've cleared the full two-tier chain.
 router.get('/payslips/me', async (req, res, next) => {
   try {
     const employee = await prisma.employee.findUnique({ where: { userId: req.user.id } });
-    const payslips = await prisma.payslip.findMany({ where: { employeeId: employee.id }, include: { payrollRun: true }, orderBy: { createdAt: 'desc' } });
+    const payslips = await prisma.payslip.findMany({
+      where: { employeeId: employee.id, payrollRun: { status: { in: ['APPROVED', 'PAID'] } } },
+      include: { payrollRun: true },
+      orderBy: { createdAt: 'desc' },
+    });
     res.json({ payslips });
   } catch (err) { next(err); }
 });
 
-// Generate a PDF payslip, push to Supabase, store URL
-router.post('/payslips/:id/generate-pdf', requireRole(...PAYROLL_ROLES), async (req, res, next) => {
+// ---- PDF generation (shared by the auto-generation on final approval, and manual regenerate) ----
+async function generateAndStorePayslipPdf(payslip) {
+  const pdfDoc = await PDFDocument.create();
+  const page = pdfDoc.addPage([595, 842]);
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+
+  // Logo — top right corner, for document authenticity.
+  try {
+    const logoBytes = fs.readFileSync(LOGO_PATH);
+    const logoImage = await pdfDoc.embedPng(logoBytes);
+    const logoWidth = 130;
+    const logoHeight = (logoImage.height / logoImage.width) * logoWidth;
+    const logoX = 595 - logoWidth - 50;
+    const logoY = 842 - logoHeight - 40;
+    page.drawImage(logoImage, { x: logoX, y: logoY, width: logoWidth, height: logoHeight });
+  } catch (logoErr) {
+    console.error('[payroll] Logo not embedded (asset missing?):', logoErr.message);
+  }
+
+  let y = 800;
+  const draw = (text, size = 11, f = font, color = rgb(0, 0, 0)) => {
+    page.drawText(text, { x: 50, y, size, font: f, color });
+    y -= size + 8;
+  };
+
+  draw('ESTRADA INTERNATIONAL — PAYSLIP', 16, bold, rgb(0.93, 0.2, 0.13));
+  draw(`${payslip.employee.firstName} ${payslip.employee.lastName} (${payslip.employee.employeeCode})`, 12, bold);
+  draw(`Period: ${payslip.payrollRun.month}/${payslip.payrollRun.year}`);
+  y -= 10;
+  draw(`Basic Salary: ${payslip.basicSalary.toFixed(2)}`);
+  draw(`Gross Allowances: ${payslip.grossAllowances.toFixed(2)}`);
+  draw(`Overtime Pay: ${payslip.overtimePay.toFixed(2)}`);
+  draw(`PAYE: -${payslip.paye.toFixed(2)}`);
+  draw(`Pension (Employee): -${payslip.pensionEmployee.toFixed(2)}`);
+  draw(`NHF: -${payslip.nhf.toFixed(2)}`);
+  draw(`Total Deductions: -${payslip.totalDeductions.toFixed(2)}`);
+  y -= 10;
+  draw(`NET PAY: ${payslip.netPay.toFixed(2)}`, 14, bold, rgb(0.11, 0.16, 0.29));
+
+  const pdfBytes = await pdfDoc.save();
+  const destinationPath = `payslips/${payslip.employeeId}/${payslip.payrollRun.year}-${payslip.payrollRun.month}.pdf`;
+  const { url } = await uploadToSupabase(Buffer.from(pdfBytes), destinationPath, 'application/pdf');
+
+  const updated = await prisma.payslip.update({ where: { id: payslip.id }, data: { pdfUrl: url } });
+
+  await sendPayslipReadyEmail({
+    to: payslip.employee.user.email,
+    firstName: payslip.employee.firstName,
+    month: payslip.payrollRun.month,
+    year: payslip.payrollRun.year,
+  });
+
+  return updated;
+}
+
+// Manual regenerate — Super Admin only, safety net for a run that's already approved
+// (e.g. logo asset was fixed and payslips need re-rendering).
+router.post('/payslips/:id/generate-pdf', requireRole('SUPER_ADMIN'), async (req, res, next) => {
   try {
     const payslip = await prisma.payslip.findUnique({
       where: { id: req.params.id },
       include: { employee: { include: { user: true } }, payrollRun: true },
     });
     if (!payslip) return res.status(404).json({ message: 'Payslip not found' });
-
-    const pdfDoc = await PDFDocument.create();
-    const page = pdfDoc.addPage([595, 842]);
-    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-
-    const pageWidth = 595;
-    const margin = 50;
-
-    // Logo — top right corner, for document authenticity.
-    let headerBottomY = 800;
-    try {
-      const logoBytes = fs.readFileSync(LOGO_PATH);
-      const logoImage = await pdfDoc.embedPng(logoBytes);
-      const maxLogoWidth = 110;
-      const scale = maxLogoWidth / logoImage.width;
-      const logoWidth = logoImage.width * scale;
-      const logoHeight = logoImage.height * scale;
-      const logoX = pageWidth - margin - logoWidth;
-      const logoY = 842 - 40 - logoHeight;
-      page.drawImage(logoImage, { x: logoX, y: logoY, width: logoWidth, height: logoHeight });
-      headerBottomY = logoY - 10;
-    } catch (logoErr) {
-      // If the logo asset is ever missing, don't fail payslip generation over it —
-      // just fall back to a text-only header.
-      console.error('[payslip] Could not embed logo:', logoErr.message);
+    if (!['APPROVED', 'PAID'].includes(payslip.payrollRun.status)) {
+      return res.status(400).json({ message: 'This payslip belongs to a run that has not completed approval yet.' });
     }
-
-    let y = Math.min(800, headerBottomY);
-    const draw = (text, size = 11, f = font, color = rgb(0, 0, 0)) => {
-      page.drawText(text, { x: margin, y, size, font: f, color });
-      y -= size + 8;
-    };
-
-    draw('ESTRADA INTERNATIONAL — PAYSLIP', 16, bold, rgb(0.93, 0.2, 0.13));
-    draw(`${payslip.employee.firstName} ${payslip.employee.lastName} (${payslip.employee.employeeCode})`, 12, bold);
-    draw(`Period: ${payslip.payrollRun.month}/${payslip.payrollRun.year}`);
-    y -= 10;
-    draw(`Basic Salary: ${payslip.basicSalary.toFixed(2)}`);
-    draw(`Gross Allowances: ${payslip.grossAllowances.toFixed(2)}`);
-    draw(`Overtime Pay: ${payslip.overtimePay.toFixed(2)}`);
-    draw(`PAYE: -${payslip.paye.toFixed(2)}`);
-    draw(`Pension (Employee): -${payslip.pensionEmployee.toFixed(2)}`);
-    draw(`NHF: -${payslip.nhf.toFixed(2)}`);
-    draw(`Total Deductions: -${payslip.totalDeductions.toFixed(2)}`);
-    y -= 10;
-    draw(`NET PAY: ${payslip.netPay.toFixed(2)}`, 14, bold, rgb(0.11, 0.16, 0.29));
-
-    const pdfBytes = await pdfDoc.save();
-    const destinationPath = `payslips/${payslip.employeeId}/${payslip.payrollRun.year}-${payslip.payrollRun.month}.pdf`;
-    const { url } = await uploadToSupabase(Buffer.from(pdfBytes), destinationPath, 'application/pdf');
-
-    const updated = await prisma.payslip.update({ where: { id: payslip.id }, data: { pdfUrl: url } });
-
-    await sendPayslipReadyEmail({
-      to: payslip.employee.user.email,
-      firstName: payslip.employee.firstName,
-      month: payslip.payrollRun.month,
-      year: payslip.payrollRun.year,
-    });
-
-    await logActivity({ employeeId: payslip.employeeId, actorUserId: req.user.id, action: 'PAYROLL_PROCESSED', description: `Payslip generated for ${payslip.payrollRun.month}/${payslip.payrollRun.year}` });
-
+    const updated = await generateAndStorePayslipPdf(payslip);
     res.json({ payslip: updated });
   } catch (err) { next(err); }
 });
 
 // Excel export of a payroll run
-router.get('/runs/:id/export', requireRole(...PAYROLL_ROLES), async (req, res, next) => {
+router.get('/runs/:id/export', requireRole(...PAYROLL_ROLES, ...APPROVAL_ROLES), async (req, res, next) => {
   try {
     const payslips = await prisma.payslip.findMany({
       where: { payrollRunId: req.params.id },

@@ -5,9 +5,15 @@ import StatusBadge from '../../components/shared/StatusBadge.jsx';
 
 export default function Payroll() {
   const { user } = useAuth();
-  const isPayroll = ['SUPER_ADMIN', 'HR_ADMIN', 'PAYROLL_OFFICER'].includes(user?.role);
-  const [tab, setTab] = useState(isPayroll ? 'Runs' : 'My Payslips');
-  const tabs = isPayroll ? ['Runs', 'Salary Structures', 'Statutory Settings', 'My Payslips'] : ['My Payslips'];
+  const canRunPayroll = ['SUPER_ADMIN', 'HR_ADMIN', 'PAYROLL_OFFICER'].includes(user?.role);
+  const canApprove = ['SUPER_ADMIN', 'HR_MANAGER'].includes(user?.role);
+  const hasAnyPrivilege = canRunPayroll || canApprove;
+  const [tab, setTab] = useState(canRunPayroll || canApprove ? 'Runs' : 'My Payslips');
+  const tabs = [
+    ...(canRunPayroll || canApprove ? ['Runs'] : []),
+    ...(canRunPayroll ? ['Salary Structures', 'Statutory Settings'] : []),
+    'My Payslips',
+  ];
 
   return (
     <div className="space-y-6">
@@ -17,7 +23,7 @@ export default function Payroll() {
           <button key={t} onClick={() => setTab(t)} className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${tab === t ? 'border-estrada-red text-estrada-red' : 'border-transparent text-slate-500'}`}>{t}</button>
         ))}
       </div>
-      {tab === 'Runs' && <PayrollRuns />}
+      {tab === 'Runs' && <PayrollRuns canRunPayroll={canRunPayroll} canApprove={canApprove} />}
       {tab === 'Salary Structures' && <SalaryStructures />}
       {tab === 'Statutory Settings' && <StatutorySettings />}
       {tab === 'My Payslips' && <MyPayslips />}
@@ -25,12 +31,24 @@ export default function Payroll() {
   );
 }
 
-function PayrollRuns() {
+const STATUS_HINTS = {
+  DRAFT: 'Not processed yet',
+  REVIEW: 'Processed — ready to submit for approval',
+  PENDING_HR_MANAGER: 'Awaiting HR Manager approval',
+  PENDING_SUPER_ADMIN: 'HR Manager approved — awaiting Super Admin final approval',
+  APPROVED: 'Fully approved — payslips generated and visible to employees',
+  REJECTED: 'Rejected — back with Payroll for changes',
+  PAID: 'Paid',
+};
+
+function PayrollRuns({ canRunPayroll, canApprove }) {
+  const { user } = useAuth();
   const [runs, setRuns] = useState([]);
   const [month, setMonth] = useState(new Date().getMonth() + 1);
   const [year, setYear] = useState(new Date().getFullYear());
   const [selectedRun, setSelectedRun] = useState(null);
   const [payslips, setPayslips] = useState([]);
+  const [error, setError] = useState('');
 
   async function loadRuns() {
     const { data } = await api.get('/payroll/runs');
@@ -38,19 +56,19 @@ function PayrollRuns() {
   }
   useEffect(() => { loadRuns(); }, []);
 
+  async function act(action, runId, body) {
+    setError('');
+    try {
+      await api.post(`/payroll/runs/${runId}/${action}`, body);
+      loadRuns();
+      if (selectedRun === runId) viewPayslips(runId);
+    } catch (err) {
+      setError(err.response?.data?.message || 'Action failed');
+    }
+  }
+
   async function createRun() {
     await api.post('/payroll/runs', { month: Number(month), year: Number(year) });
-    loadRuns();
-  }
-
-  async function process(runId) {
-    await api.post(`/payroll/runs/${runId}/process`);
-    loadRuns();
-    if (selectedRun === runId) viewPayslips(runId);
-  }
-
-  async function approve(runId) {
-    await api.post(`/payroll/runs/${runId}/approve`);
     loadRuns();
   }
 
@@ -64,13 +82,22 @@ function PayrollRuns() {
     window.open(`${import.meta.env.VITE_API_URL}/payroll/runs/${runId}/export`, '_blank');
   }
 
+  function reject(runId) {
+    const reason = prompt('Reason for rejecting this run (sent back to Review):');
+    if (reason) act('reject', runId, { reason });
+  }
+
   return (
     <div className="space-y-5">
-      <div className="card p-4 flex flex-wrap items-end gap-3">
-        <div><label className="label">Month</label><input type="number" min={1} max={12} className="input w-24" value={month} onChange={(e) => setMonth(e.target.value)} /></div>
-        <div><label className="label">Year</label><input type="number" className="input w-28" value={year} onChange={(e) => setYear(e.target.value)} /></div>
-        <button onClick={createRun} className="btn-primary">Create/Open Run</button>
-      </div>
+      {error && <div className="bg-red-50 dark:bg-red-900/30 text-red-600 text-sm px-3 py-2 rounded-lg">{error}</div>}
+
+      {canRunPayroll && (
+        <div className="card p-4 flex flex-wrap items-end gap-3">
+          <div><label className="label">Month</label><input type="number" min={1} max={12} className="input w-24" value={month} onChange={(e) => setMonth(e.target.value)} /></div>
+          <div><label className="label">Year</label><input type="number" className="input w-28" value={year} onChange={(e) => setYear(e.target.value)} /></div>
+          <button onClick={createRun} className="btn-primary">Create/Open Run</button>
+        </div>
+      )}
 
       <div className="card overflow-x-auto">
         <table className="w-full text-sm">
@@ -81,12 +108,34 @@ function PayrollRuns() {
             {runs.map((r) => (
               <tr key={r.id}>
                 <td className="px-4 py-3">{r.month}/{r.year}</td>
-                <td className="px-4 py-3"><StatusBadge status={r.status} /></td>
+                <td className="px-4 py-3">
+                  <StatusBadge status={r.status} />
+                  <p className="text-xs text-slate-400 mt-1">{STATUS_HINTS[r.status]}</p>
+                  {r.status === 'REVIEW' && r.rejectionReason && (
+                    <p className="text-xs text-red-500 mt-1">Last rejection: {r.rejectionReason}</p>
+                  )}
+                </td>
                 <td className="px-4 py-3 flex flex-wrap gap-2">
-                  <button onClick={() => process(r.id)} className="btn-secondary text-xs">Process</button>
-                  {r.status === 'REVIEW' && <button onClick={() => approve(r.id)} className="btn-secondary text-xs">Approve</button>}
+                  {canRunPayroll && ['DRAFT', 'REVIEW', 'REJECTED'].includes(r.status) && (
+                    <button onClick={() => act('process', r.id)} className="btn-secondary text-xs">Process</button>
+                  )}
+                  {canRunPayroll && r.status === 'REVIEW' && (
+                    <button onClick={() => act('submit-for-approval', r.id)} className="btn-primary text-xs">Submit for Approval</button>
+                  )}
+                  {canApprove && r.status === 'PENDING_HR_MANAGER' && ['HR_MANAGER', 'SUPER_ADMIN'].includes(user.role) && (
+                    <>
+                      <button onClick={() => act('hr-manager-approve', r.id)} className="btn-primary text-xs">HR Manager Approve</button>
+                      <button onClick={() => reject(r.id)} className="btn-secondary text-xs text-red-600">Reject</button>
+                    </>
+                  )}
+                  {canApprove && r.status === 'PENDING_SUPER_ADMIN' && user.role === 'SUPER_ADMIN' && (
+                    <>
+                      <button onClick={() => act('final-approve', r.id)} className="btn-primary text-xs">Final Approve</button>
+                      <button onClick={() => reject(r.id)} className="btn-secondary text-xs text-red-600">Reject</button>
+                    </>
+                  )}
                   <button onClick={() => viewPayslips(r.id)} className="btn-secondary text-xs">View Payslips</button>
-                  <button onClick={() => exportRun(r.id)} className="btn-secondary text-xs">Export Excel</button>
+                  {(canRunPayroll || canApprove) && <button onClick={() => exportRun(r.id)} className="btn-secondary text-xs">Export Excel</button>}
                 </td>
               </tr>
             ))}
@@ -107,13 +156,15 @@ function PayrollRuns() {
                   <td className="px-4 py-3">{p.employee.firstName} {p.employee.lastName}</td>
                   <td className="px-4 py-3">{p.netPay.toFixed(2)}</td>
                   <td className="px-4 py-3">
-                    <button onClick={async () => { await api.post(`/payroll/payslips/${p.id}/generate-pdf`); viewPayslips(selectedRun); }} className="btn-secondary text-xs">
-                      {p.pdfUrl ? 'Regenerate PDF' : 'Generate PDF'}
-                    </button>
-                    {p.pdfUrl && <a href={p.pdfUrl} target="_blank" rel="noreferrer" className="text-xs text-estrada-red ml-2 hover:underline">Download</a>}
+                    {p.pdfUrl ? (
+                      <a href={p.pdfUrl} target="_blank" rel="noreferrer" className="text-xs text-estrada-red hover:underline">Download</a>
+                    ) : (
+                      <span className="text-xs text-slate-400">Generated automatically once fully approved</span>
+                    )}
                   </td>
                 </tr>
               ))}
+              {payslips.length === 0 && <tr><td className="px-4 py-6 text-slate-400" colSpan={3}>No payslips in this run yet — process it first.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -122,36 +173,74 @@ function PayrollRuns() {
   );
 }
 
+// Housing and Transport are always present as dedicated fields (Basic + Housing + Transport
+// = the company's default "BHT" salary format). Under the hood they're still just entries
+// in the generic `allowances` array the backend already understands — no API change needed.
+// "Other Allowances" below covers anything beyond Housing/Transport (bonuses, top-ups, etc).
 function SalaryStructures() {
   const [employees, setEmployees] = useState([]);
   const [employeeId, setEmployeeId] = useState('');
-  const [form, setForm] = useState({ basicSalary: '', allowances: [], deductions: [] });
+  const [basicSalary, setBasicSalary] = useState('');
+  const [housing, setHousing] = useState('');
+  const [transport, setTransport] = useState('');
+  const [otherAllowances, setOtherAllowances] = useState([]);
+  const [deductions, setDeductions] = useState([]);
 
   useEffect(() => { api.get('/employees').then((r) => setEmployees(r.data.employees)); }, []);
 
   async function loadStructure(id) {
     setEmployeeId(id);
     const { data } = await api.get(`/payroll/salary-structure/${id}`);
-    setForm(data.structure ? { basicSalary: data.structure.basicSalary, allowances: data.structure.allowances, deductions: data.structure.deductions } : { basicSalary: '', allowances: [], deductions: [] });
+    const allowances = data.structure?.allowances || [];
+    const housingEntry = allowances.find((a) => a.name.toLowerCase() === 'housing');
+    const transportEntry = allowances.find((a) => a.name.toLowerCase() === 'transport');
+    const rest = allowances.filter((a) => !['housing', 'transport'].includes(a.name.toLowerCase()));
+
+    setBasicSalary(data.structure?.basicSalary ?? '');
+    setHousing(housingEntry?.amount ?? '');
+    setTransport(transportEntry?.amount ?? '');
+    setOtherAllowances(rest);
+    setDeductions(data.structure?.deductions || []);
   }
 
-  function addLine(field) {
-    setForm({ ...form, [field]: [...form[field], { name: '', amount: 0 }] });
+  function addOtherAllowance() {
+    setOtherAllowances([...otherAllowances, { name: '', amount: 0 }]);
   }
-
-  function updateLine(field, idx, key, value) {
-    const list = [...form[field]];
+  function updateOtherAllowance(idx, key, value) {
+    const list = [...otherAllowances];
     list[idx] = { ...list[idx], [key]: key === 'amount' ? Number(value) : value };
-    setForm({ ...form, [field]: list });
+    setOtherAllowances(list);
+  }
+  function removeOtherAllowance(idx) {
+    setOtherAllowances(otherAllowances.filter((_, i) => i !== idx));
+  }
+
+  function addDeduction() {
+    setDeductions([...deductions, { name: '', amount: 0 }]);
+  }
+  function updateDeduction(idx, key, value) {
+    const list = [...deductions];
+    list[idx] = { ...list[idx], [key]: key === 'amount' ? Number(value) : value };
+    setDeductions(list);
   }
 
   async function save() {
-    await api.put('/payroll/salary-structure', { employeeId, basicSalary: Number(form.basicSalary), allowances: form.allowances, deductions: form.deductions });
+    const allowances = [
+      { name: 'Housing', amount: Number(housing) || 0 },
+      { name: 'Transport', amount: Number(transport) || 0 },
+      ...otherAllowances,
+    ];
+    await api.put('/payroll/salary-structure', {
+      employeeId,
+      basicSalary: Number(basicSalary) || 0,
+      allowances,
+      deductions,
+    });
     alert('Salary structure saved');
   }
 
   return (
-    <div className="card p-6 space-y-4">
+    <div className="card p-6 space-y-5">
       <div>
         <label className="label">Employee</label>
         <select className="input" value={employeeId} onChange={(e) => loadStructure(e.target.value)}>
@@ -159,26 +248,45 @@ function SalaryStructures() {
           {employees.map((e) => <option key={e.id} value={e.id}>{e.firstName} {e.lastName} ({e.employeeCode})</option>)}
         </select>
       </div>
+
       {employeeId && (
         <>
-          <div><label className="label">Basic Salary</label><input type="number" className="input" value={form.basicSalary} onChange={(e) => setForm({ ...form, basicSalary: e.target.value })} /></div>
-
           <div>
-            <div className="flex justify-between items-center mb-2"><label className="label !mb-0">Allowances</label><button onClick={() => addLine('allowances')} className="text-xs text-estrada-red">+ Add</button></div>
-            {form.allowances.map((a, i) => (
-              <div key={i} className="flex gap-2 mb-2">
-                <input className="input" placeholder="Name" value={a.name} onChange={(e) => updateLine('allowances', i, 'name', e.target.value)} />
-                <input type="number" className="input w-32" placeholder="Amount" value={a.amount} onChange={(e) => updateLine('allowances', i, 'amount', e.target.value)} />
+            <p className="label !mb-2">Basic + Housing + Transport (BHT)</p>
+            <div className="grid sm:grid-cols-3 gap-3">
+              <div>
+                <label className="label">Basic Salary</label>
+                <input type="number" className="input" value={basicSalary} onChange={(e) => setBasicSalary(e.target.value)} />
               </div>
-            ))}
+              <div>
+                <label className="label">Housing Allowance</label>
+                <input type="number" className="input" value={housing} onChange={(e) => setHousing(e.target.value)} />
+              </div>
+              <div>
+                <label className="label">Transport Allowance</label>
+                <input type="number" className="input" value={transport} onChange={(e) => setTransport(e.target.value)} />
+              </div>
+            </div>
           </div>
 
           <div>
-            <div className="flex justify-between items-center mb-2"><label className="label !mb-0">Other Deductions</label><button onClick={() => addLine('deductions')} className="text-xs text-estrada-red">+ Add</button></div>
-            {form.deductions.map((d, i) => (
+            <div className="flex justify-between items-center mb-2"><label className="label !mb-0">Other Allowances</label><button onClick={addOtherAllowance} className="text-xs text-estrada-red">+ Add</button></div>
+            {otherAllowances.map((a, i) => (
               <div key={i} className="flex gap-2 mb-2">
-                <input className="input" placeholder="Name" value={d.name} onChange={(e) => updateLine('deductions', i, 'name', e.target.value)} />
-                <input type="number" className="input w-32" placeholder="Amount" value={d.amount} onChange={(e) => updateLine('deductions', i, 'amount', e.target.value)} />
+                <input className="input" placeholder="Name (e.g. Bonus)" value={a.name} onChange={(e) => updateOtherAllowance(i, 'name', e.target.value)} />
+                <input type="number" className="input w-32" placeholder="Amount" value={a.amount} onChange={(e) => updateOtherAllowance(i, 'amount', e.target.value)} />
+                <button onClick={() => removeOtherAllowance(i)} className="text-red-600 text-xs px-2">✕</button>
+              </div>
+            ))}
+            {otherAllowances.length === 0 && <p className="text-xs text-slate-400">None — Basic, Housing, and Transport cover the default structure.</p>}
+          </div>
+
+          <div>
+            <div className="flex justify-between items-center mb-2"><label className="label !mb-0">Other Deductions</label><button onClick={addDeduction} className="text-xs text-estrada-red">+ Add</button></div>
+            {deductions.map((d, i) => (
+              <div key={i} className="flex gap-2 mb-2">
+                <input className="input" placeholder="Name" value={d.name} onChange={(e) => updateDeduction(i, 'name', e.target.value)} />
+                <input type="number" className="input w-32" placeholder="Amount" value={d.amount} onChange={(e) => updateDeduction(i, 'amount', e.target.value)} />
               </div>
             ))}
           </div>
@@ -268,7 +376,7 @@ function MyPayslips() {
               <td className="px-4 py-3">{p.pdfUrl ? <a href={p.pdfUrl} target="_blank" rel="noreferrer" className="text-estrada-red hover:underline">Download</a> : '—'}</td>
             </tr>
           ))}
-          {payslips.length === 0 && <tr><td className="px-4 py-6 text-slate-400" colSpan={3}>No payslips yet.</td></tr>}
+          {payslips.length === 0 && <tr><td className="px-4 py-6 text-slate-400" colSpan={3}>No approved payslips yet.</td></tr>}
         </tbody>
       </table>
     </div>

@@ -8,7 +8,7 @@ const NAV = [
   { to: '/documents', label: 'Documents', icon: '📁', roles: null },
   { to: '/attendance', label: 'Attendance', icon: '📍', roles: null },
   { to: '/leave', label: 'Leave', icon: '🌴', roles: null },
-  { to: '/payroll', label: 'Payroll', icon: '💰', roles: ['SUPER_ADMIN', 'HR_ADMIN', 'PAYROLL_OFFICER', 'EMPLOYEE', 'TEAM_LEAD'] },
+  { to: '/payroll', label: 'Payroll', icon: '💰', roles: ['SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER', 'PAYROLL_OFFICER', 'EMPLOYEE', 'TEAM_LEAD'] },
   { to: '/clients', label: 'Clients & Sites', icon: '🏢', roles: ['SUPER_ADMIN', 'HR_ADMIN', 'TEAM_LEAD'] },
   { to: '/exit', label: 'Exit Management', icon: '🚪', roles: ['SUPER_ADMIN', 'HR_ADMIN'] },
   { to: '/admin', label: 'Administration', icon: '⚙️', roles: ['SUPER_ADMIN', 'HR_ADMIN'] },

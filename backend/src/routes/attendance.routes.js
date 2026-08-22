@@ -5,13 +5,20 @@ import { prisma } from '../lib/prisma.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { distanceInMeters } from '../utils/geo.js';
 import { logActivity } from '../utils/activityLog.js';
+import { nowInLagos, minutesSinceMidnightLagos, lagosDateBoundary } from '../utils/timezone.js';
 
 const router = Router();
 router.use(requireAuth);
 
 const WEEKDAY_CODES = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
-function todayCode(date) {
-  return WEEKDAY_CODES[date.getDay()];
+
+// Lagos-aware weekday — Date.getDay() reads server-local time, which can disagree with
+// Nigeria's calendar day near midnight if the server runs in a different timezone.
+function todayCodeLagos(date = new Date()) {
+  const weekdayName = new Intl.DateTimeFormat('en-US', { timeZone: 'Africa/Lagos', weekday: 'short' })
+    .format(date)
+    .toUpperCase(); // e.g. "MON"
+  return WEEKDAY_CODES.find((c) => weekdayName.startsWith(c)) || WEEKDAY_CODES[date.getDay()];
 }
 
 async function getRuleForEmployee(employee) {
@@ -22,13 +29,15 @@ async function getRuleForEmployee(employee) {
   return prisma.attendanceRule.findFirst({ where: { isDefault: true } });
 }
 
-function minutesSinceMidnight(date) {
-  return date.getHours() * 60 + date.getMinutes();
-}
-
 function parseHHMM(str) {
   const [h, m] = str.split(':').map(Number);
   return h * 60 + m;
+}
+
+function isRemoteDay(rule, date) {
+  const code = todayCodeLagos(date);
+  const remoteDays = (rule.remoteDays || '').split(',').filter(Boolean);
+  return remoteDays.includes(code);
 }
 
 const checkInSchema = z.object({ latitude: z.number(), longitude: z.number() });
@@ -44,19 +53,11 @@ router.post('/check-in', async (req, res, next) => {
     if (!rule) return res.status(400).json({ message: 'No attendance rule configured for your site' });
 
     const now = new Date();
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const remote = isRemoteDay(rule, now);
 
-    // Hybrid support: if today is a configured remote/WFH day for this rule, skip the
-    // geofence check entirely — location is still recorded for reference, just not enforced.
-    const remoteDayCodes = (rule.remoteDays || '').split(',').map((d) => d.trim()).filter(Boolean);
-    const isRemoteDay = remoteDayCodes.includes(todayCode(now));
-    const workMode = isRemoteDay ? 'REMOTE' : 'ONSITE';
-
-    if (!isRemoteDay) {
+    if (!remote) {
       const distance = distanceInMeters(latitude, longitude, employee.site.latitude, employee.site.longitude);
-      const withinRadius = distance <= rule.gpsRadiusMeters;
-      if (!withinRadius) {
+      if (distance > rule.gpsRadiusMeters) {
         return res.status(403).json({
           message: `You are approximately ${Math.round(distance).toLocaleString()}m from ${employee.site.name}. Allowed check-in radius is ${rule.gpsRadiusMeters}m.`,
           distanceMeters: Math.round(distance),
@@ -65,13 +66,14 @@ router.post('/check-in', async (req, res, next) => {
       }
     }
 
+    const today = lagosDateBoundary(now);
     const shiftStartMin = parseHHMM(rule.shiftStart);
-    const nowMin = minutesSinceMidnight(now);
+    const nowMin = minutesSinceMidnightLagos(now);
     const status = nowMin > shiftStartMin + rule.gracePeriodMinutes ? 'LATE' : 'PRESENT';
 
     const attendance = await prisma.attendance.upsert({
       where: { employeeId_date: { employeeId: employee.id, date: today } },
-      update: { checkInAt: now, checkInLat: latitude, checkInLng: longitude, status, siteId: employee.siteId, workMode },
+      update: { checkInAt: now, checkInLat: latitude, checkInLng: longitude, status, siteId: employee.siteId, workMode: remote ? 'REMOTE' : 'ONSITE' },
       create: {
         employeeId: employee.id,
         siteId: employee.siteId,
@@ -80,7 +82,7 @@ router.post('/check-in', async (req, res, next) => {
         checkInLat: latitude,
         checkInLng: longitude,
         status,
-        workMode,
+        workMode: remote ? 'REMOTE' : 'ONSITE',
       },
     });
 
@@ -94,8 +96,8 @@ router.post('/check-out', async (req, res, next) => {
     const employee = await prisma.employee.findUnique({ where: { userId: req.user.id }, include: { site: true } });
     if (!employee) return res.status(404).json({ message: 'Employee profile not found' });
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const now = new Date();
+    const today = lagosDateBoundary(now);
 
     const existing = await prisma.attendance.findUnique({ where: { employeeId_date: { employeeId: employee.id, date: today } } });
     if (!existing || !existing.checkInAt) {
@@ -103,13 +105,12 @@ router.post('/check-out', async (req, res, next) => {
     }
 
     const rule = await getRuleForEmployee(employee);
-    const now = new Date();
     const hoursWorked = (now - new Date(existing.checkInAt)) / (1000 * 60 * 60);
 
     let status = existing.status;
     if (rule) {
       const shiftEndMin = parseHHMM(rule.shiftEnd);
-      const nowMin = minutesSinceMidnight(now);
+      const nowMin = minutesSinceMidnightLagos(now);
       if (nowMin < shiftEndMin) status = 'EARLY_DEPARTURE';
       else if (hoursWorked >= rule.overtimeThresholdHours) status = 'OVERTIME';
       else if (hoursWorked < rule.halfDayHours) status = 'HALF_DAY';
@@ -172,8 +173,7 @@ const manualSchema = z.object({
 router.post('/manual', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
   try {
     const data = manualSchema.parse(req.body);
-    const date = new Date(data.date);
-    date.setHours(0, 0, 0, 0);
+    const date = lagosDateBoundary(new Date(data.date));
     const attendance = await prisma.attendance.upsert({
       where: { employeeId_date: { employeeId: data.employeeId, date } },
       update: { status: data.status, notes: data.notes },
@@ -189,8 +189,9 @@ router.post('/manual', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, 
 // Not wired into payroll calculations yet; that's a separate, later step.
 // ---------------------------------------------------------
 async function buildMonthlyReport({ month, year, siteId }) {
-  const start = new Date(year, month - 1, 1);
-  const end = new Date(year, month, 0, 23, 59, 59);
+  const start = lagosDateBoundary(new Date(year, month - 1, 1));
+  const end = lagosDateBoundary(new Date(year, month, 0));
+  end.setUTCHours(end.getUTCHours() + 23, 59, 59);
 
   const records = await prisma.attendance.findMany({
     where: {
@@ -285,4 +286,3 @@ router.get('/monthly-report/export', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'PAY
 });
 
 export default router;
-

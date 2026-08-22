@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import api from '../../lib/api.js';
-import StatusBadge from '../../components/shared/StatusBadge.jsx';
 
 const TABS = ['Departments & Positions', 'Attendance Rules', 'Users', 'Audit Logs'];
 
@@ -87,7 +86,6 @@ const WEEKDAYS = [
 function AttendanceRules() {
   const [rules, setRules] = useState([]);
   const [sites, setSites] = useState([]);
-  const [editingId, setEditingId] = useState(null);
   const emptyForm = {
     name: '',
     siteId: '',
@@ -108,6 +106,7 @@ function AttendanceRules() {
     requiresApproval: false,
   };
   const [form, setForm] = useState(emptyForm);
+  const [editingId, setEditingId] = useState(null);
 
   async function load() {
     const [{ data: r }, { data: s }] = await Promise.all([api.get('/attendance-rules'), api.get('/clients/sites/all')]);
@@ -129,14 +128,11 @@ function AttendanceRules() {
     setForm((f) => {
       const state = f.remoteDays.includes(code) ? 'REMOTE' : f.workingDays.includes(code) ? 'ONSITE' : 'OFF';
       if (state === 'OFF') {
-        // Off -> Onsite
         return { ...f, workingDays: [...f.workingDays, code] };
       }
       if (state === 'ONSITE') {
-        // Onsite -> Remote (stays a working day, just marked remote)
         return { ...f, remoteDays: [...f.remoteDays, code] };
       }
-      // Remote -> Off
       return { ...f, workingDays: f.workingDays.filter((d) => d !== code), remoteDays: f.remoteDays.filter((d) => d !== code) };
     });
   }
@@ -203,14 +199,11 @@ function AttendanceRules() {
   return (
     <div className="space-y-5">
       <div className="card p-6 space-y-5">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="font-semibold text-slate-800 dark:text-white">{editingId ? 'Edit Attendance Rule' : 'New Attendance Rule'}</h2>
-            <p className="text-xs text-slate-400 mt-1">
-              This defines how check-in/check-out is judged: what counts as on time, how many hours make a full day, and the GPS radius allowed for check-in.
-            </p>
-          </div>
-          {editingId && <button type="button" onClick={cancelEdit} className="text-xs text-slate-400 hover:underline">Cancel edit</button>}
+        <div>
+          <h2 className="font-semibold text-slate-800 dark:text-white">{editingId ? 'Edit Attendance Rule' : 'New Attendance Rule'}</h2>
+          <p className="text-xs text-slate-400 mt-1">
+            This defines how check-in/check-out is judged: what counts as on time, how many hours make a full day, and the GPS radius allowed for check-in.
+          </p>
         </div>
 
         <div className="grid sm:grid-cols-2 gap-4">
@@ -297,7 +290,7 @@ function AttendanceRules() {
         <div>
           <label className="label">GPS check-in radius (meters)</label>
           <input type="number" className="input max-w-xs" placeholder="e.g. 150" value={form.gpsRadiusMeters} onChange={(e) => setForm({ ...form, gpsRadiusMeters: e.target.value })} />
-          <p className="text-xs text-slate-400 mt-1">How far from the site's pinned GPS location an employee can be and still check in (ignored on remote/WFH days above).</p>
+          <p className="text-xs text-slate-400 mt-1">How far from the site's pinned GPS location an employee can be and still check in.</p>
         </div>
 
         <div className="grid sm:grid-cols-2 gap-4">
@@ -337,7 +330,7 @@ function AttendanceRules() {
 
         <div className="flex gap-2">
           <button onClick={save} className="btn-primary">{editingId ? 'Save Changes' : 'Create Rule'}</button>
-          {editingId && <button type="button" onClick={cancelEdit} className="btn-secondary">Cancel</button>}
+          {editingId && <button onClick={cancelEdit} className="btn-secondary">Cancel Edit</button>}
         </div>
       </div>
 
@@ -410,7 +403,7 @@ function Users() {
               <td className="px-4 py-3">{u.employee ? `${u.employee.firstName} ${u.employee.lastName}` : '—'}</td>
               <td className="px-4 py-3">
                 <select className="input !py-1 !w-40" value={u.role} onChange={(e) => changeRole(u.id, e.target.value)}>
-                  {['SUPER_ADMIN', 'HR_ADMIN', 'PAYROLL_OFFICER', 'TEAM_LEAD', 'EMPLOYEE'].map((r) => <option key={r} value={r}>{r.replace('_', ' ')}</option>)}
+                  {['SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER', 'PAYROLL_OFFICER', 'TEAM_LEAD', 'EMPLOYEE'].map((r) => <option key={r} value={r}>{r.replace('_', ' ')}</option>)}
                 </select>
               </td>
               <td className="px-4 py-3">{u.isActive ? <span className="badge bg-green-100 text-green-700">Active</span> : <span className="badge bg-red-100 text-red-700">Inactive</span>}</td>
