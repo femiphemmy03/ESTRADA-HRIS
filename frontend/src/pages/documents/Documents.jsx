@@ -3,10 +3,12 @@ import { useSearchParams } from 'react-router-dom';
 import api from '../../lib/api.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 
+const ADMIN_ROLES = ['SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER'];
+
 export default function Documents() {
   const { employee, user } = useAuth();
   const [searchParams] = useSearchParams();
-  const isPrivileged = ['SUPER_ADMIN', 'HR_ADMIN'].includes(user?.role);
+  const isPrivileged = ADMIN_ROLES.includes(user?.role);
   const [tab, setTab] = useState(searchParams.get('tab') === 'employee' ? 'Employee Documents' : 'Company Documents');
 
   return (

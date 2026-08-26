@@ -5,8 +5,8 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 
 const router = Router();
 router.use(requireAuth);
+const ADMIN_ROLES = ['SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER'];
 
-// ---------- Clients ----------
 router.get('/', async (req, res, next) => {
   try {
     const clients = await prisma.client.findMany({ include: { sites: true } });
@@ -14,7 +14,7 @@ router.get('/', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.post('/', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
+router.post('/', requireRole(...ADMIN_ROLES), async (req, res, next) => {
   try {
     const data = z
       .object({ name: z.string().min(1), contactName: z.string().optional(), contactEmail: z.string().email().optional(), contactPhone: z.string().optional() })
@@ -24,14 +24,13 @@ router.post('/', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) 
   } catch (err) { next(err); }
 });
 
-router.patch('/:id', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
+router.patch('/:id', requireRole(...ADMIN_ROLES), async (req, res, next) => {
   try {
     const client = await prisma.client.update({ where: { id: req.params.id }, data: req.body });
     res.json({ client });
   } catch (err) { next(err); }
 });
 
-// ---------- Sites ----------
 router.get('/:clientId/sites', async (req, res, next) => {
   try {
     const sites = await prisma.site.findMany({ where: { clientId: req.params.clientId }, include: { attendanceRule: true } });
@@ -56,11 +55,10 @@ const siteSchema = z.object({
   shift: z.string().optional(),
 });
 
-// Team Lead proposes a new site (pending HR approval), or HR/Admin creates one directly (auto-approved)
-router.post('/sites', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'TEAM_LEAD'), async (req, res, next) => {
+router.post('/sites', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER', 'TEAM_LEAD'), async (req, res, next) => {
   try {
     const data = siteSchema.parse(req.body);
-    const isPrivileged = ['SUPER_ADMIN', 'HR_ADMIN'].includes(req.user.role);
+    const isPrivileged = ADMIN_ROLES.includes(req.user.role);
     const site = await prisma.site.create({
       data: {
         ...data,
@@ -73,7 +71,7 @@ router.post('/sites', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'TEAM_LEAD'), async
   } catch (err) { next(err); }
 });
 
-router.post('/sites/:id/approve', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
+router.post('/sites/:id/approve', requireRole(...ADMIN_ROLES), async (req, res, next) => {
   try {
     const site = await prisma.site.update({
       where: { id: req.params.id },
@@ -83,7 +81,7 @@ router.post('/sites/:id/approve', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async 
   } catch (err) { next(err); }
 });
 
-router.post('/sites/:id/reject', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
+router.post('/sites/:id/reject', requireRole(...ADMIN_ROLES), async (req, res, next) => {
   try {
     const site = await prisma.site.update({ where: { id: req.params.id }, data: { approvalStatus: 'REJECTED' } });
     res.json({ site });

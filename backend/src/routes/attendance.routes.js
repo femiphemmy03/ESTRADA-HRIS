@@ -12,12 +12,10 @@ router.use(requireAuth);
 
 const WEEKDAY_CODES = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
 
-// Lagos-aware weekday — Date.getDay() reads server-local time, which can disagree with
-// Nigeria's calendar day near midnight if the server runs in a different timezone.
 function todayCodeLagos(date = new Date()) {
   const weekdayName = new Intl.DateTimeFormat('en-US', { timeZone: 'Africa/Lagos', weekday: 'short' })
     .format(date)
-    .toUpperCase(); // e.g. "MON"
+    .toUpperCase();
   return WEEKDAY_CODES.find((c) => weekdayName.startsWith(c)) || WEEKDAY_CODES[date.getDay()];
 }
 
@@ -38,6 +36,16 @@ function isRemoteDay(rule, date) {
   const code = todayCodeLagos(date);
   const remoteDays = (rule.remoteDays || '').split(',').filter(Boolean);
   return remoteDays.includes(code);
+}
+
+// Converts a "YYYY-MM-DD" query-string date (as typed/picked in the browser) into the
+// correct Lagos-midnight UTC instant — the same reference point attendance rows are
+// stored with. Using `new Date(dateString)` directly (UTC midnight) was the bug: it
+// silently never matched Lagos-boundary-stored rows, making "today" queries return
+// nothing even though the data was there.
+function parseLagosDateParam(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return lagosDateBoundary(new Date(Date.UTC(y, m - 1, d, 12))); // noon UTC avoids any DST/edge ambiguity
 }
 
 const checkInSchema = z.object({ latitude: z.number(), longitude: z.number() });
@@ -138,7 +146,7 @@ router.get('/me', async (req, res, next) => {
     const attendances = await prisma.attendance.findMany({
       where: {
         employeeId: employee.id,
-        ...(from && to ? { date: { gte: new Date(from), lte: new Date(to) } } : {}),
+        ...(from && to ? { date: { gte: parseLagosDateParam(from), lte: parseLagosDateParam(to) } } : {}),
       },
       orderBy: { date: 'desc' },
     });
@@ -146,14 +154,14 @@ router.get('/me', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.get('/', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'PAYROLL_OFFICER', 'TEAM_LEAD'), async (req, res, next) => {
+router.get('/', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER', 'PAYROLL_OFFICER', 'TEAM_LEAD'), async (req, res, next) => {
   try {
     const { employeeId, siteId, from, to } = req.query;
     const attendances = await prisma.attendance.findMany({
       where: {
         ...(employeeId ? { employeeId } : {}),
         ...(siteId ? { siteId } : {}),
-        ...(from && to ? { date: { gte: new Date(from), lte: new Date(to) } } : {}),
+        ...(from && to ? { date: { gte: parseLagosDateParam(from), lte: parseLagosDateParam(to) } } : {}),
       },
       include: { employee: { select: { firstName: true, lastName: true, employeeCode: true } }, site: true },
       orderBy: { date: 'desc' },
@@ -162,7 +170,6 @@ router.get('/', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'PAYROLL_OFFICER', 'TEAM_
   } catch (err) { next(err); }
 });
 
-// HR/Payroll can manually mark a day (e.g. approved WFH, absence correction)
 const manualSchema = z.object({
   employeeId: z.string(),
   date: z.string(),
@@ -170,10 +177,10 @@ const manualSchema = z.object({
   notes: z.string().optional(),
 });
 
-router.post('/manual', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
+router.post('/manual', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER'), async (req, res, next) => {
   try {
     const data = manualSchema.parse(req.body);
-    const date = lagosDateBoundary(new Date(data.date));
+    const date = parseLagosDateParam(data.date);
     const attendance = await prisma.attendance.upsert({
       where: { employeeId_date: { employeeId: data.employeeId, date } },
       update: { status: data.status, notes: data.notes },
@@ -185,17 +192,17 @@ router.post('/manual', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, 
 });
 
 // ---------------------------------------------------------
-// Monthly attendance report — read-only aggregation, no writes.
-// Not wired into payroll calculations yet; that's a separate, later step.
+// Monthly attendance report
 // ---------------------------------------------------------
 async function buildMonthlyReport({ month, year, siteId }) {
-  const start = lagosDateBoundary(new Date(year, month - 1, 1));
-  const end = lagosDateBoundary(new Date(year, month, 0));
-  end.setUTCHours(end.getUTCHours() + 23, 59, 59);
+  // Exclusive upper bound (start of next month, Lagos-local) — cleaner and avoids the
+  // hour-math bugs that come from trying to build an inclusive end-of-day instant.
+  const start = lagosDateBoundary(new Date(Date.UTC(year, month - 1, 1, 12)));
+  const end = lagosDateBoundary(new Date(Date.UTC(year, month, 1, 12)));
 
   const records = await prisma.attendance.findMany({
     where: {
-      date: { gte: start, lte: end },
+      date: { gte: start, lt: end },
       ...(siteId ? { siteId } : {}),
     },
     include: {
@@ -246,7 +253,7 @@ const reportQuerySchema = z.object({
   siteId: z.string().optional(),
 });
 
-router.get('/monthly-report', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'PAYROLL_OFFICER', 'TEAM_LEAD'), async (req, res, next) => {
+router.get('/monthly-report', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER', 'PAYROLL_OFFICER', 'TEAM_LEAD'), async (req, res, next) => {
   try {
     const { month, year, siteId } = reportQuerySchema.parse(req.query);
     const report = await buildMonthlyReport({ month, year, siteId });
@@ -254,7 +261,7 @@ router.get('/monthly-report', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'PAYROLL_OF
   } catch (err) { next(err); }
 });
 
-router.get('/monthly-report/export', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'PAYROLL_OFFICER'), async (req, res, next) => {
+router.get('/monthly-report/export', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER', 'PAYROLL_OFFICER'), async (req, res, next) => {
   try {
     const { month, year, siteId } = reportQuerySchema.parse(req.query);
     const report = await buildMonthlyReport({ month, year, siteId });

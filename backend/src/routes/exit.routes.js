@@ -6,6 +6,7 @@ import { logActivity } from '../utils/activityLog.js';
 
 const router = Router();
 router.use(requireAuth);
+const ADMIN_ROLES = ['SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER'];
 
 const DEFAULT_CLEARANCE_TASKS = [
   'Return company ID badge',
@@ -15,7 +16,7 @@ const DEFAULT_CLEARANCE_TASKS = [
   'Finance clearance',
 ];
 
-router.post('/initiate', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
+router.post('/initiate', requireRole(...ADMIN_ROLES), async (req, res, next) => {
   try {
     const data = z.object({ employeeId: z.string(), reason: z.string().optional(), lastWorkingDay: z.string().optional() }).parse(req.body);
 
@@ -46,7 +47,7 @@ router.get('/:employeeId', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.patch('/clearance-task/:id', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
+router.patch('/clearance-task/:id', requireRole(...ADMIN_ROLES), async (req, res, next) => {
   try {
     const task = await prisma.exitClearanceTask.update({
       where: { id: req.params.id },
@@ -56,7 +57,7 @@ router.patch('/clearance-task/:id', requireRole('SUPER_ADMIN', 'HR_ADMIN'), asyn
   } catch (err) { next(err); }
 });
 
-router.patch('/:id/interview-notes', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
+router.patch('/:id/interview-notes', requireRole(...ADMIN_ROLES), async (req, res, next) => {
   try {
     const { notes } = z.object({ notes: z.string() }).parse(req.body);
     const exitProcess = await prisma.exitProcess.update({
@@ -67,7 +68,7 @@ router.patch('/:id/interview-notes', requireRole('SUPER_ADMIN', 'HR_ADMIN'), asy
   } catch (err) { next(err); }
 });
 
-router.patch('/:id/final-settlement', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'PAYROLL_OFFICER'), async (req, res, next) => {
+router.patch('/:id/final-settlement', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER', 'PAYROLL_OFFICER'), async (req, res, next) => {
   try {
     const { amount } = z.object({ amount: z.number() }).parse(req.body);
     const exitProcess = await prisma.exitProcess.update({
@@ -78,7 +79,7 @@ router.patch('/:id/final-settlement', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'PA
   } catch (err) { next(err); }
 });
 
-router.post('/:id/complete', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
+router.post('/:id/complete', requireRole(...ADMIN_ROLES), async (req, res, next) => {
   try {
     const exitProcess = await prisma.exitProcess.update({
       where: { id: req.params.id },

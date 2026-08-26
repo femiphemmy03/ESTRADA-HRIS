@@ -53,4 +53,22 @@ api.interceptors.response.use(
   }
 );
 
+/**
+ * Downloads a file from a protected backend endpoint (e.g. an Excel export).
+ * `window.open()` sends a plain browser navigation with no Authorization header, which is
+ * why exports were failing with "missing or invalid authorization header" — this goes
+ * through the authenticated `api` instance instead, then triggers the save as a blob.
+ */
+export async function downloadFile(url, params, filename) {
+  const response = await api.get(url, { params, responseType: 'blob' });
+  const blobUrl = window.URL.createObjectURL(new Blob([response.data]));
+  const link = document.createElement('a');
+  link.href = blobUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(blobUrl);
+}
+
 export default api;

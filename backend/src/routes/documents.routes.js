@@ -8,8 +8,9 @@ import { logActivity } from '../utils/activityLog.js';
 
 const router = Router();
 router.use(requireAuth);
+const ADMIN_ROLES = ['SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER'];
 
-// ---------- Document Types (still used for EMPLOYEE-owned personal documents) ----------
+// ---------- Document Types (employee-owned, e.g. CV, Passport) ----------
 router.get('/types', async (req, res, next) => {
   try {
     const types = await prisma.documentType.findMany();
@@ -17,7 +18,7 @@ router.get('/types', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.post('/types', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
+router.post('/types', requireRole(...ADMIN_ROLES), async (req, res, next) => {
   try {
     const data = z
       .object({
@@ -32,24 +33,25 @@ router.post('/types', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, n
   } catch (err) { next(err); }
 });
 
-// ---------- Upload (EMPLOYEE-owned personal documents — CV, ID, certificates, etc.) ----------
+// ---------- Employee document upload (CV, ID, Passport, etc.) ----------
 router.post('/upload', upload.single('file'), async (req, res, next) => {
   try {
     const { documentTypeId, employeeId, expiryDate } = req.body;
     if (!req.file) return res.status(400).json({ message: 'file is required' });
-    if (!documentTypeId) return res.status(400).json({ message: 'documentTypeId is required for personal document uploads' });
 
     const docType = await prisma.documentType.findUnique({ where: { id: documentTypeId } });
     if (!docType) return res.status(404).json({ message: 'Document type not found' });
 
     const isSelf = employeeId ? (await prisma.employee.findUnique({ where: { id: employeeId } }))?.userId === req.user.id : false;
-    const isPrivileged = ['SUPER_ADMIN', 'HR_ADMIN'].includes(req.user.role);
-    if (!isSelf && !isPrivileged) {
+    const isPrivileged = ADMIN_ROLES.includes(req.user.role);
+    if (docType.owner === 'EMPLOYEE' && !isSelf && !isPrivileged) {
       return res.status(403).json({ message: 'Not permitted to upload for this employee' });
     }
 
     const safeName = req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const destinationPath = `employees/${employeeId}/${Date.now()}_${safeName}`;
+    const destinationPath = employeeId
+      ? `employees/${employeeId}/${Date.now()}_${safeName}`
+      : `company/${Date.now()}_${safeName}`;
 
     const { url, path } = await uploadToSupabase(req.file.buffer, destinationPath, req.file.mimetype);
 
@@ -77,7 +79,7 @@ router.get('/', async (req, res, next) => {
   try {
     const { employeeId } = req.query;
     const documents = await prisma.document.findMany({
-      where: { employeeId: employeeId || null },
+      where: employeeId ? { employeeId } : { employeeId: null },
       include: { documentType: true },
       orderBy: { uploadedAt: 'desc' },
     });
@@ -85,9 +87,75 @@ router.get('/', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+router.post('/:id/acknowledge', async (req, res, next) => {
+  try {
+    const document = await prisma.document.update({
+      where: { id: req.params.id },
+      data: { ackStatus: 'ACKNOWLEDGED', acknowledgedAt: new Date() },
+    });
+    if (document.employeeId) {
+      await logActivity({ employeeId: document.employeeId, actorUserId: req.user.id, action: 'DOCUMENT_ACKNOWLEDGED', description: 'Employee acknowledged a company document/policy' });
+    }
+    res.json({ document });
+  } catch (err) { next(err); }
+});
+
+// ---------- Company documents — free-form title + department scoping, no preset types ----------
+router.get('/company', async (req, res, next) => {
+  try {
+    const isPrivileged = ADMIN_ROLES.includes(req.user.role);
+    const employee = await prisma.employee.findUnique({ where: { userId: req.user.id } });
+
+    const documents = await prisma.document.findMany({
+      where: {
+        employeeId: null,
+        documentTypeId: null,
+        ...(isPrivileged ? {} : { OR: [{ departmentId: null }, { departmentId: employee?.departmentId || undefined }] }),
+      },
+      include: { department: true },
+      orderBy: { uploadedAt: 'desc' },
+    });
+    res.json({ documents });
+  } catch (err) { next(err); }
+});
+
+router.post('/company-upload', requireRole(...ADMIN_ROLES), upload.single('file'), async (req, res, next) => {
+  try {
+    const { title, departmentId } = req.body;
+    if (!req.file) return res.status(400).json({ message: 'file is required' });
+    if (!title) return res.status(400).json({ message: 'title is required' });
+
+    const safeName = req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const destinationPath = `company/${Date.now()}_${safeName}`;
+    const { url, path } = await uploadToSupabase(req.file.buffer, destinationPath, req.file.mimetype);
+
+    const document = await prisma.document.create({
+      data: {
+        title,
+        departmentId: departmentId || null,
+        fileUrl: url,
+        fileName: req.file.originalname,
+        storagePath: path,
+        ackStatus: 'NOT_REQUIRED',
+      },
+    });
+
+    res.status(201).json({ document });
+  } catch (err) { next(err); }
+});
+
+router.delete('/company/:id', requireRole(...ADMIN_ROLES), async (req, res, next) => {
+  try {
+    const document = await prisma.document.findUnique({ where: { id: req.params.id } });
+    if (!document) return res.status(404).json({ message: 'Not found' });
+    await removeFromSupabase(document.storagePath);
+    await prisma.document.delete({ where: { id: req.params.id } });
+    res.status(204).send();
+  } catch (err) { next(err); }
+});
+
 // ---------- Employee document matrix — HR/Admin overview of every employee's uploads ----------
-// One set of 3 queries total (employees, doc types, documents), not one call per employee.
-router.get('/employee-matrix', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
+router.get('/employee-matrix', requireRole(...ADMIN_ROLES), async (req, res, next) => {
   try {
     const employees = await prisma.employee.findMany({
       where: { archived: false },
@@ -112,7 +180,6 @@ router.get('/employee-matrix', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (re
       orderBy: { uploadedAt: 'desc' },
     });
 
-    // Keep only the most recent upload per (employee, documentType) pair.
     const matrix = {};
     for (const d of documents) {
       if (!matrix[d.employeeId]) matrix[d.employeeId] = {};
@@ -123,84 +190,7 @@ router.get('/employee-matrix', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (re
   } catch (err) { next(err); }
 });
 
-
-// HR/Admin uploads with a plain title and picks a department (or leaves it for "all departments").
-// Employees only ever see docs that are either department-wide-none (visible to everyone) or match
-// their own department. HR/Admin see everything, across all departments, for management purposes.
-router.post('/company-upload', requireRole('SUPER_ADMIN', 'HR_ADMIN'), upload.single('file'), async (req, res, next) => {
-  try {
-    const { title, departmentId } = req.body;
-    if (!req.file) return res.status(400).json({ message: 'file is required' });
-    if (!title || !title.trim()) return res.status(400).json({ message: 'title is required' });
-
-    const safeName = req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const destinationPath = `company/${Date.now()}_${safeName}`;
-    const { url, path } = await uploadToSupabase(req.file.buffer, destinationPath, req.file.mimetype);
-
-    const document = await prisma.document.create({
-      data: {
-        title: title.trim(),
-        departmentId: departmentId || null,
-        employeeId: null,
-        documentTypeId: null,
-        fileUrl: url,
-        fileName: req.file.originalname,
-        storagePath: path,
-        ackStatus: 'NOT_REQUIRED',
-      },
-    });
-
-    res.status(201).json({ document });
-  } catch (err) { next(err); }
-});
-
-router.get('/company', async (req, res, next) => {
-  try {
-    const isPrivileged = ['SUPER_ADMIN', 'HR_ADMIN'].includes(req.user.role);
-    let where = { employeeId: null, documentTypeId: null };
-
-    if (!isPrivileged) {
-      const employee = await prisma.employee.findUnique({ where: { userId: req.user.id } });
-      where = {
-        ...where,
-        OR: [{ departmentId: null }, { departmentId: employee?.departmentId || '__none__' }],
-      };
-    }
-
-    const documents = await prisma.document.findMany({
-      where,
-      include: { department: true },
-      orderBy: { uploadedAt: 'desc' },
-    });
-    res.json({ documents });
-  } catch (err) { next(err); }
-});
-
-router.delete('/company/:id', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
-  try {
-    const document = await prisma.document.findUnique({ where: { id: req.params.id } });
-    if (!document) return res.status(404).json({ message: 'Not found' });
-    await removeFromSupabase(document.storagePath);
-    await prisma.document.delete({ where: { id: req.params.id } });
-    res.status(204).send();
-  } catch (err) { next(err); }
-});
-
-// ---------- Acknowledgement / deletion (shared by both document families) ----------
-router.post('/:id/acknowledge', async (req, res, next) => {
-  try {
-    const document = await prisma.document.update({
-      where: { id: req.params.id },
-      data: { ackStatus: 'ACKNOWLEDGED', acknowledgedAt: new Date() },
-    });
-    if (document.employeeId) {
-      await logActivity({ employeeId: document.employeeId, actorUserId: req.user.id, action: 'DOCUMENT_ACKNOWLEDGED', description: 'Employee acknowledged a company document/policy' });
-    }
-    res.json({ document });
-  } catch (err) { next(err); }
-});
-
-router.delete('/:id', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
+router.delete('/:id', requireRole(...ADMIN_ROLES), async (req, res, next) => {
   try {
     const document = await prisma.document.findUnique({ where: { id: req.params.id } });
     if (!document) return res.status(404).json({ message: 'Not found' });

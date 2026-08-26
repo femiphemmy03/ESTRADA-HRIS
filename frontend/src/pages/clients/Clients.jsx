@@ -5,7 +5,8 @@ import api from '../../lib/api.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import StatusBadge from '../../components/shared/StatusBadge.jsx';
 
-// Default marker icon fix for bundlers
+const ADMIN_ROLES = ['SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER'];
+
 const markerIcon = new L.Icon({
   iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
   shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
@@ -19,7 +20,7 @@ export default function Clients() {
   const [selectedClientId, setSelectedClientId] = useState('');
   const [showNewClient, setShowNewClient] = useState(false);
   const [showNewSite, setShowNewSite] = useState(false);
-  const isPrivileged = ['SUPER_ADMIN', 'HR_ADMIN'].includes(user?.role);
+  const isPrivileged = ADMIN_ROLES.includes(user?.role);
 
   async function load() {
     const { data } = await api.get('/clients');
@@ -64,7 +65,7 @@ export default function Clients() {
             <>
               <div className="flex items-center justify-between">
                 <h2 className="font-semibold text-slate-800 dark:text-white">{selectedClient.name} — Sites</h2>
-                {['SUPER_ADMIN', 'HR_ADMIN', 'TEAM_LEAD'].includes(user.role) && (
+                {['SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER', 'TEAM_LEAD'].includes(user.role) && (
                   <button onClick={() => setShowNewSite(true)} className="btn-secondary text-xs">+ Register Site</button>
                 )}
               </div>
@@ -150,20 +151,17 @@ function LocationPicker({ position, setPosition }) {
 function NewSiteModal({ clientId, onClose, onCreated }) {
   const [name, setName] = useState('');
   const [radius, setRadius] = useState(150);
-  const [radiusTouched, setRadiusTouched] = useState(false); // true once admin manually edits the radius
-  const [position, setPosition] = useState(null); // no default — must be set (auto or manual)
+  const [radiusTouched, setRadiusTouched] = useState(false);
+  const [position, setPosition] = useState(null);
   const [accuracy, setAccuracy] = useState(null);
   const [locating, setLocating] = useState(false);
   const [locateError, setLocateError] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  // Fallback map view only — no marker/circle shown until `position` is actually set.
-  const initialMapCenter = [9.0820, 8.6753]; // roughly the center of Nigeria, display only
+  const initialMapCenter = [9.0820, 8.6753];
 
   function suggestRadius(accuracyMeters) {
-    // Auto-suggested allowance: device accuracy + a buffer, rounded up to the nearest 50m,
-    // with a sensible floor/ceiling. Admin can still override manually.
     const withBuffer = accuracyMeters + 50;
     const rounded = Math.ceil(withBuffer / 50) * 50;
     return Math.min(500, Math.max(100, rounded));
@@ -196,15 +194,13 @@ function NewSiteModal({ clientId, onClose, onCreated }) {
     );
   }
 
-  // Auto-detect as soon as the modal opens — no button press required.
-  // The button below still works for retrying (e.g. after granting permission, or moving outdoors).
   useEffect(() => {
     useMyLocation();
   }, []); // eslint-disable-line
 
   function handleManualPick(pos) {
     setPosition(pos);
-    setAccuracy(null); // manual map clicks have no device accuracy figure to base a suggestion on
+    setAccuracy(null);
   }
 
   function handleRadiusChange(v) {

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import api from '../../lib/api.js';
+import { useAuth } from '../../context/AuthContext.jsx';
 
 const TABS = ['Departments & Positions', 'Attendance Rules', 'Users', 'Audit Logs'];
 
@@ -115,9 +116,6 @@ function AttendanceRules() {
   }
   useEffect(() => { load(); }, []);
 
-  // Each day cycles through three independent states: Off -> Onsite -> Remote -> Off.
-  // workingDays (attendance expected at all) = Onsite ∪ Remote, remoteDays = Remote only —
-  // both derived from the same click so there's no separate gated step.
   function dayState(code) {
     if (form.remoteDays.includes(code)) return 'REMOTE';
     if (form.workingDays.includes(code)) return 'ONSITE';
@@ -373,6 +371,7 @@ function AttendanceRules() {
 }
 
 function Users() {
+  const { user: currentUser } = useAuth();
   const [users, setUsers] = useState([]);
   async function load() {
     const { data } = await api.get('/admin/users');
@@ -381,14 +380,24 @@ function Users() {
   useEffect(() => { load(); }, []);
 
   async function changeRole(id, role) {
-    await api.patch(`/admin/users/${id}/role`, { role });
-    load();
+    try {
+      await api.patch(`/admin/users/${id}/role`, { role });
+      load();
+    } catch (err) {
+      alert(err.response?.data?.message || 'Could not change role');
+    }
   }
   async function deactivate(id) {
     if (!confirm('Deactivate this user?')) return;
-    await api.patch(`/admin/users/${id}/deactivate`);
-    load();
+    try {
+      await api.patch(`/admin/users/${id}/deactivate`);
+      load();
+    } catch (err) {
+      alert(err.response?.data?.message || 'Could not deactivate this user');
+    }
   }
+
+  const isHrManager = currentUser?.role === 'HR_MANAGER';
 
   return (
     <div className="card overflow-x-auto">
@@ -397,19 +406,28 @@ function Users() {
           <tr><th className="text-left px-4 py-3">Email</th><th className="text-left px-4 py-3">Employee</th><th className="text-left px-4 py-3">Role</th><th className="text-left px-4 py-3">Status</th><th className="text-left px-4 py-3">Actions</th></tr>
         </thead>
         <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-          {users.map((u) => (
-            <tr key={u.id}>
-              <td className="px-4 py-3">{u.email}</td>
-              <td className="px-4 py-3">{u.employee ? `${u.employee.firstName} ${u.employee.lastName}` : '—'}</td>
-              <td className="px-4 py-3">
-                <select className="input !py-1 !w-40" value={u.role} onChange={(e) => changeRole(u.id, e.target.value)}>
-                  {['SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER', 'PAYROLL_OFFICER', 'TEAM_LEAD', 'EMPLOYEE'].map((r) => <option key={r} value={r}>{r.replace('_', ' ')}</option>)}
-                </select>
-              </td>
-              <td className="px-4 py-3">{u.isActive ? <span className="badge bg-green-100 text-green-700">Active</span> : <span className="badge bg-red-100 text-red-700">Inactive</span>}</td>
-              <td className="px-4 py-3">{u.isActive && <button onClick={() => deactivate(u.id)} className="btn-secondary text-xs text-red-600">Deactivate</button>}</td>
-            </tr>
-          ))}
+          {users.map((u) => {
+            const locked = isHrManager && u.role === 'SUPER_ADMIN';
+            return (
+              <tr key={u.id}>
+                <td className="px-4 py-3">{u.email}</td>
+                <td className="px-4 py-3">{u.employee ? `${u.employee.firstName} ${u.employee.lastName}` : '—'}</td>
+                <td className="px-4 py-3">
+                  <select disabled={locked} className="input !py-1 !w-40 disabled:opacity-50" value={u.role} onChange={(e) => changeRole(u.id, e.target.value)}>
+                    {['SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER', 'PAYROLL_OFFICER', 'TEAM_LEAD', 'EMPLOYEE'].map((r) => <option key={r} value={r}>{r.replace('_', ' ')}</option>)}
+                  </select>
+                </td>
+                <td className="px-4 py-3">{u.isActive ? <span className="badge bg-green-100 text-green-700">Active</span> : <span className="badge bg-red-100 text-red-700">Inactive</span>}</td>
+                <td className="px-4 py-3">
+                  {u.isActive && (
+                    <button onClick={() => deactivate(u.id)} disabled={locked} className="btn-secondary text-xs text-red-600 disabled:opacity-50 disabled:cursor-not-allowed">
+                      {locked ? 'Protected' : 'Deactivate'}
+                    </button>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

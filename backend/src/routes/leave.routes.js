@@ -8,7 +8,6 @@ import { sendLeaveStatusEmail } from '../lib/mailer.js';
 const router = Router();
 router.use(requireAuth);
 
-// ---------- Leave Types ----------
 router.get('/types', async (req, res, next) => {
   try {
     const types = await prisma.leaveType.findMany();
@@ -16,7 +15,7 @@ router.get('/types', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.post('/types', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
+router.post('/types', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER'), async (req, res, next) => {
   try {
     const data = z.object({ name: z.string().min(1), defaultDaysPerYear: z.number(), isPaid: z.boolean().default(true) }).parse(req.body);
     const type = await prisma.leaveType.create({ data });
@@ -24,7 +23,6 @@ router.post('/types', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, n
   } catch (err) { next(err); }
 });
 
-// ---------- Balances ----------
 router.get('/balances/:employeeId', async (req, res, next) => {
   try {
     const balances = await prisma.leaveBalance.findMany({ where: { employeeId: req.params.employeeId }, include: { leaveType: true } });
@@ -32,7 +30,7 @@ router.get('/balances/:employeeId', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.post('/balances', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
+router.post('/balances', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER'), async (req, res, next) => {
   try {
     const data = z.object({ employeeId: z.string(), leaveTypeId: z.string(), year: z.number(), entitledDays: z.number() }).parse(req.body);
     const balance = await prisma.leaveBalance.upsert({
@@ -44,7 +42,6 @@ router.post('/balances', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res
   } catch (err) { next(err); }
 });
 
-// ---------- Requests ----------
 const requestSchema = z.object({
   leaveTypeId: z.string(),
   startDate: z.string(),
@@ -57,9 +54,6 @@ router.post('/requests', async (req, res, next) => {
     const data = requestSchema.parse(req.body);
     const employee = await prisma.employee.findUnique({ where: { userId: req.user.id } });
     const days = (new Date(data.endDate) - new Date(data.startDate)) / (1000 * 60 * 60 * 24) + 1;
-
-    // No team lead assigned → skip straight to HR approval instead of getting stuck
-    // waiting on a manager stage that has nobody to action it.
     const initialStatus = employee.teamLeadId ? 'PENDING_MANAGER' : 'PENDING_HR';
 
     const leaveRequest = await prisma.leaveRequest.create({
@@ -90,7 +84,6 @@ router.get('/requests', async (req, res, next) => {
     const where = {
       ...(status ? { status } : {}),
       ...(employeeId ? { employeeId } : {}),
-      // Team Leads only ever see requests from their own direct reports.
       ...(req.user.role === 'TEAM_LEAD' ? { employee: { teamLeadId: req.user.employee?.id } } : {}),
       ...(req.user.role === 'EMPLOYEE' ? { employee: { userId: req.user.id } } : {}),
     };
@@ -103,7 +96,9 @@ router.get('/requests', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.post('/requests/:id/manager-approve', requireRole('TEAM_LEAD', 'SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
+// Stage 1 (line manager) — Team Lead approves their own direct report's request.
+// HR Manager and Super Admin retain override, consistent with the seniority chain.
+router.post('/requests/:id/manager-approve', requireRole('TEAM_LEAD', 'HR_MANAGER', 'SUPER_ADMIN'), async (req, res, next) => {
   try {
     const leaveRequest = await prisma.leaveRequest.findUnique({
       where: { id: req.params.id },
@@ -113,10 +108,6 @@ router.post('/requests/:id/manager-approve', requireRole('TEAM_LEAD', 'SUPER_ADM
     if (leaveRequest.status !== 'PENDING_MANAGER') {
       return res.status(400).json({ message: 'This request is not awaiting manager approval' });
     }
-
-    // A Team Lead may only approve requests from their own assigned direct reports —
-    // not any employee in the company. HR Admin / Super Admin keep an override for
-    // cases where the assigned team lead is unavailable.
     if (req.user.role === 'TEAM_LEAD' && leaveRequest.employee.teamLeadId !== req.user.employee?.id) {
       return res.status(403).json({ message: 'You are only able to approve leave for your own direct reports' });
     }
@@ -130,7 +121,10 @@ router.post('/requests/:id/manager-approve', requireRole('TEAM_LEAD', 'SUPER_ADM
   } catch (err) { next(err); }
 });
 
-router.post('/requests/:id/hr-decision', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
+// Stage 2 (final HR decision) — HR Admin no longer decides this alone. HR Manager is the
+// authoritative final approver for leave; Super Admin can always act directly too, since
+// their own actions never require anyone else's sign-off.
+router.post('/requests/:id/hr-decision', requireRole('HR_MANAGER', 'SUPER_ADMIN'), async (req, res, next) => {
   try {
     const { approve, rejectionReason } = z.object({ approve: z.boolean(), rejectionReason: z.string().optional() }).parse(req.body);
 
@@ -152,7 +146,6 @@ router.post('/requests/:id/hr-decision', requireRole('SUPER_ADMIN', 'HR_ADMIN'),
     });
 
     if (approve) {
-      // Reflect on attendance: mark each day within range as ON_LEAVE
       const start = new Date(leaveRequest.startDate);
       const end = new Date(leaveRequest.endDate);
       const days = [];
@@ -178,7 +171,7 @@ router.post('/requests/:id/hr-decision', requireRole('SUPER_ADMIN', 'HR_ADMIN'),
       });
     }
 
-    await logActivity({ employeeId: leaveRequest.employeeId, actorUserId: req.user.id, action: 'LEAVE_DECISION', description: `Leave request ${approve ? 'approved' : 'rejected'} by HR` });
+    await logActivity({ employeeId: leaveRequest.employeeId, actorUserId: req.user.id, action: 'LEAVE_DECISION', description: `Leave request ${approve ? 'approved' : 'rejected'} by ${req.user.role === 'SUPER_ADMIN' ? 'Super Admin' : 'HR Manager'}` });
 
     await sendLeaveStatusEmail({
       to: leaveRequest.employee.user.email,

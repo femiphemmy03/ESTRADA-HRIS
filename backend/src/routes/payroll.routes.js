@@ -17,18 +17,22 @@ const LOGO_PATH = path.join(__dirname, '..', 'assets', 'estrada-logo.png');
 
 const router = Router();
 router.use(requireAuth);
-const PAYROLL_ROLES = ['SUPER_ADMIN', 'HR_ADMIN', 'PAYROLL_OFFICER'];
-const APPROVAL_ROLES = ['SUPER_ADMIN', 'HR_MANAGER']; // who can view/act on runs pending approval
+// PAYROLL_ROLES: can edit salary structures, statutory settings, create/process runs, submit for approval.
+// APPROVAL_ROLES: can act on runs pending approval. HR_MANAGER sits in both — full access except
+// the very last step (final-approve), which stays Super-Admin-only by design.
+const PAYROLL_ROLES = ['SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER', 'PAYROLL_OFFICER'];
+const APPROVAL_ROLES = ['SUPER_ADMIN', 'HR_MANAGER'];
+const VIEW_ROLES = ['SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER', 'PAYROLL_OFFICER'];
 
 // ---------- Salary Structure ----------
-// Allowances is a generic [{name, amount}] array — Housing/Transport are just entries
-// in it by convention (enforced on the frontend), so no schema/backend change needed
-// to support the "Basic + Housing + Transport" (BHT) default structure.
 const salarySchema = z.object({
   employeeId: z.string(),
   basicSalary: z.number(),
   allowances: z.array(z.object({ name: z.string(), amount: z.number() })).default([]),
   deductions: z.array(z.object({ name: z.string(), amount: z.number() })).default([]),
+  payeEnabled: z.boolean().default(false),
+  pensionEnabled: z.boolean().default(false),
+  nhfEnabled: z.boolean().default(false),
 });
 
 router.put('/salary-structure', requireRole(...PAYROLL_ROLES), async (req, res, next) => {
@@ -36,7 +40,15 @@ router.put('/salary-structure', requireRole(...PAYROLL_ROLES), async (req, res, 
     const data = salarySchema.parse(req.body);
     const structure = await prisma.salaryStructure.upsert({
       where: { employeeId: data.employeeId },
-      update: { basicSalary: data.basicSalary, allowances: data.allowances, deductions: data.deductions, effectiveFrom: new Date() },
+      update: {
+        basicSalary: data.basicSalary,
+        allowances: data.allowances,
+        deductions: data.deductions,
+        payeEnabled: data.payeEnabled,
+        pensionEnabled: data.pensionEnabled,
+        nhfEnabled: data.nhfEnabled,
+        effectiveFrom: new Date(),
+      },
       create: data,
     });
     res.json({ structure });
@@ -50,7 +62,7 @@ router.get('/salary-structure/:employeeId', requireRole(...PAYROLL_ROLES), async
   } catch (err) { next(err); }
 });
 
-// ---------- Payroll Settings (configurable statutory rules) ----------
+// ---------- Payroll Settings ----------
 router.get('/settings', requireRole(...PAYROLL_ROLES), async (req, res, next) => {
   try {
     const settings = await prisma.payrollSettings.findMany({ orderBy: { effectiveFrom: 'desc' } });
@@ -66,7 +78,7 @@ const settingsSchema = z.object({
   effectiveTo: z.string().optional(),
 });
 
-router.post('/settings', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
+router.post('/settings', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER'), async (req, res, next) => {
   try {
     const data = settingsSchema.parse(req.body);
     const setting = await prisma.payrollSettings.create({
@@ -76,7 +88,7 @@ router.post('/settings', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res
   } catch (err) { next(err); }
 });
 
-router.patch('/settings/:id', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
+router.patch('/settings/:id', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER'), async (req, res, next) => {
   try {
     const setting = await prisma.payrollSettings.update({ where: { id: req.params.id }, data: req.body });
     res.json({ setting });
@@ -122,15 +134,13 @@ router.post('/runs', requireRole(...PAYROLL_ROLES), async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.get('/runs', requireRole(...PAYROLL_ROLES, ...APPROVAL_ROLES), async (req, res, next) => {
+router.get('/runs', requireRole(...VIEW_ROLES), async (req, res, next) => {
   try {
     const runs = await prisma.payrollRun.findMany({ orderBy: [{ year: 'desc' }, { month: 'desc' }] });
     res.json({ runs });
   } catch (err) { next(err); }
 });
 
-// Process/compute payslips for every active employee with a salary structure.
-// This only computes numbers — it does NOT generate PDFs or submit for approval.
 router.post('/runs/:id/process', requireRole(...PAYROLL_ROLES), async (req, res, next) => {
   try {
     const run = await prisma.payrollRun.findUnique({ where: { id: req.params.id } });
@@ -161,11 +171,6 @@ router.post('/runs/:id/process', requireRole(...PAYROLL_ROLES), async (req, res,
     res.json({ payslips: results });
   } catch (err) { next(err); }
 });
-
-// ---- Two-tier approval chain ----
-// REVIEW -> (submit) -> PENDING_HR_MANAGER -> (HR Manager approves) -> PENDING_SUPER_ADMIN
-//        -> (Super Admin approves) -> APPROVED [payslip PDFs auto-generate here]
-// Any pending stage can be rejected back to REVIEW with a reason.
 
 router.post('/runs/:id/submit-for-approval', requireRole(...PAYROLL_ROLES), async (req, res, next) => {
   try {
@@ -220,8 +225,6 @@ router.post('/runs/:id/final-approve', requireRole('SUPER_ADMIN'), async (req, r
       data: { status: 'APPROVED', approvedById: req.user.employee?.id, approvedAt: new Date() },
     });
 
-    // Auto-generate every payslip's PDF now that the run is fully approved —
-    // this is what makes them appear on each employee's "My Payslips" tab.
     const payslips = await prisma.payslip.findMany({
       where: { payrollRunId: run.id },
       include: { employee: { include: { user: true } }, payrollRun: true },
@@ -260,7 +263,7 @@ router.post('/runs/:id/reject', requireRole('HR_MANAGER', 'SUPER_ADMIN'), async 
   } catch (err) { next(err); }
 });
 
-router.get('/runs/:id/payslips', requireRole(...PAYROLL_ROLES, ...APPROVAL_ROLES), async (req, res, next) => {
+router.get('/runs/:id/payslips', requireRole(...VIEW_ROLES), async (req, res, next) => {
   try {
     const payslips = await prisma.payslip.findMany({
       where: { payrollRunId: req.params.id },
@@ -270,8 +273,6 @@ router.get('/runs/:id/payslips', requireRole(...PAYROLL_ROLES, ...APPROVAL_ROLES
   } catch (err) { next(err); }
 });
 
-// Only APPROVED (or later PAID) runs' payslips are visible to the employee — pre-approval
-// figures stay internal until they've cleared the full two-tier chain.
 router.get('/payslips/me', async (req, res, next) => {
   try {
     const employee = await prisma.employee.findUnique({ where: { userId: req.user.id } });
@@ -284,14 +285,12 @@ router.get('/payslips/me', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// ---- PDF generation (shared by the auto-generation on final approval, and manual regenerate) ----
 async function generateAndStorePayslipPdf(payslip) {
   const pdfDoc = await PDFDocument.create();
   const page = pdfDoc.addPage([595, 842]);
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-  // Logo — top right corner, for document authenticity.
   try {
     const logoBytes = fs.readFileSync(LOGO_PATH);
     const logoImage = await pdfDoc.embedPng(logoBytes);
@@ -340,8 +339,6 @@ async function generateAndStorePayslipPdf(payslip) {
   return updated;
 }
 
-// Manual regenerate — Super Admin only, safety net for a run that's already approved
-// (e.g. logo asset was fixed and payslips need re-rendering).
 router.post('/payslips/:id/generate-pdf', requireRole('SUPER_ADMIN'), async (req, res, next) => {
   try {
     const payslip = await prisma.payslip.findUnique({
@@ -357,8 +354,7 @@ router.post('/payslips/:id/generate-pdf', requireRole('SUPER_ADMIN'), async (req
   } catch (err) { next(err); }
 });
 
-// Excel export of a payroll run
-router.get('/runs/:id/export', requireRole(...PAYROLL_ROLES, ...APPROVAL_ROLES), async (req, res, next) => {
+router.get('/runs/:id/export', requireRole(...VIEW_ROLES), async (req, res, next) => {
   try {
     const payslips = await prisma.payslip.findMany({
       where: { payrollRunId: req.params.id },

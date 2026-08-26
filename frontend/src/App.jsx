@@ -28,16 +28,16 @@ export default function App() {
 
       <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
         <Route path="/dashboard" element={<Dashboard />} />
-        <Route path="/employees" element={<ProtectedRoute roles={['SUPER_ADMIN', 'HR_ADMIN', 'PAYROLL_OFFICER', 'TEAM_LEAD']}><EmployeesList /></ProtectedRoute>} />
+        <Route path="/employees" element={<ProtectedRoute roles={['SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER', 'PAYROLL_OFFICER', 'TEAM_LEAD']}><EmployeesList /></ProtectedRoute>} />
         <Route path="/employees/:id" element={<EmployeeProfile />} />
         <Route path="/onboarding" element={<Onboarding />} />
         <Route path="/documents" element={<Documents />} />
         <Route path="/attendance" element={<Attendance />} />
         <Route path="/leave" element={<Leave />} />
         <Route path="/payroll" element={<Payroll />} />
-        <Route path="/clients" element={<ProtectedRoute roles={['SUPER_ADMIN', 'HR_ADMIN', 'TEAM_LEAD']}><Clients /></ProtectedRoute>} />
-        <Route path="/exit" element={<ProtectedRoute roles={['SUPER_ADMIN', 'HR_ADMIN']}><Exit /></ProtectedRoute>} />
-        <Route path="/admin" element={<ProtectedRoute roles={['SUPER_ADMIN', 'HR_ADMIN']}><Admin /></ProtectedRoute>} />
+        <Route path="/clients" element={<ProtectedRoute roles={['SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER', 'TEAM_LEAD']}><Clients /></ProtectedRoute>} />
+        <Route path="/exit" element={<ProtectedRoute roles={['SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER']}><Exit /></ProtectedRoute>} />
+        <Route path="/admin" element={<ProtectedRoute roles={['SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER']}><Admin /></ProtectedRoute>} />
       </Route>
 
       <Route path="/" element={<Navigate to="/dashboard" replace />} />

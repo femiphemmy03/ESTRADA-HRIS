@@ -1,13 +1,12 @@
 import { useEffect, useState } from 'react';
-import api from '../../lib/api.js';
+import api, { downloadFile } from '../../lib/api.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import StatusBadge from '../../components/shared/StatusBadge.jsx';
 
 export default function Payroll() {
   const { user } = useAuth();
-  const canRunPayroll = ['SUPER_ADMIN', 'HR_ADMIN', 'PAYROLL_OFFICER'].includes(user?.role);
+  const canRunPayroll = ['SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER', 'PAYROLL_OFFICER'].includes(user?.role);
   const canApprove = ['SUPER_ADMIN', 'HR_MANAGER'].includes(user?.role);
-  const hasAnyPrivilege = canRunPayroll || canApprove;
   const [tab, setTab] = useState(canRunPayroll || canApprove ? 'Runs' : 'My Payslips');
   const tabs = [
     ...(canRunPayroll || canApprove ? ['Runs'] : []),
@@ -41,6 +40,16 @@ const STATUS_HINTS = {
   PAID: 'Paid',
 };
 
+function splitAllowances(breakdown) {
+  const allowances = breakdown?.allowances || [];
+  const housing = allowances.find((a) => a.name.toLowerCase() === 'housing')?.amount || 0;
+  const transport = allowances.find((a) => a.name.toLowerCase() === 'transport')?.amount || 0;
+  const other = allowances
+    .filter((a) => !['housing', 'transport'].includes(a.name.toLowerCase()))
+    .reduce((sum, a) => sum + a.amount, 0);
+  return { housing, transport, other };
+}
+
 function PayrollRuns({ canRunPayroll, canApprove }) {
   const { user } = useAuth();
   const [runs, setRuns] = useState([]);
@@ -49,6 +58,7 @@ function PayrollRuns({ canRunPayroll, canApprove }) {
   const [selectedRun, setSelectedRun] = useState(null);
   const [payslips, setPayslips] = useState([]);
   const [error, setError] = useState('');
+  const [exporting, setExporting] = useState(false);
 
   async function loadRuns() {
     const { data } = await api.get('/payroll/runs');
@@ -78,14 +88,38 @@ function PayrollRuns({ canRunPayroll, canApprove }) {
     setPayslips(data.payslips);
   }
 
-  function exportRun(runId) {
-    window.open(`${import.meta.env.VITE_API_URL}/payroll/runs/${runId}/export`, '_blank');
+  async function exportRun(runId, runLabel) {
+    setExporting(true);
+    try {
+      await downloadFile(`/payroll/runs/${runId}/export`, {}, `payroll-${runLabel}.xlsx`);
+    } catch (err) {
+      alert('Export failed — please try again.');
+    } finally {
+      setExporting(false);
+    }
   }
 
   function reject(runId) {
     const reason = prompt('Reason for rejecting this run (sent back to Review):');
     if (reason) act('reject', runId, { reason });
   }
+
+  const totals = payslips.reduce(
+    (acc, p) => {
+      const { housing, transport, other } = splitAllowances(p.breakdown);
+      acc.basic += p.basicSalary;
+      acc.housing += housing;
+      acc.transport += transport;
+      acc.other += other;
+      acc.overtime += p.overtimePay;
+      acc.paye += p.paye;
+      acc.pension += p.pensionEmployee;
+      acc.nhf += p.nhf;
+      acc.net += p.netPay;
+      return acc;
+    },
+    { basic: 0, housing: 0, transport: 0, other: 0, overtime: 0, paye: 0, pension: 0, nhf: 0, net: 0 }
+  );
 
   return (
     <div className="space-y-5">
@@ -134,8 +168,12 @@ function PayrollRuns({ canRunPayroll, canApprove }) {
                       <button onClick={() => reject(r.id)} className="btn-secondary text-xs text-red-600">Reject</button>
                     </>
                   )}
-                  <button onClick={() => viewPayslips(r.id)} className="btn-secondary text-xs">View Payslips</button>
-                  {(canRunPayroll || canApprove) && <button onClick={() => exportRun(r.id)} className="btn-secondary text-xs">Export Excel</button>}
+                  <button onClick={() => viewPayslips(r.id)} className="btn-secondary text-xs">View Summary</button>
+                  {(canRunPayroll || canApprove) && (
+                    <button onClick={() => exportRun(r.id, `${r.month}-${r.year}`)} disabled={exporting} className="btn-secondary text-xs">
+                      {exporting ? 'Exporting…' : 'Export Excel'}
+                    </button>
+                  )}
                 </td>
               </tr>
             ))}
@@ -146,26 +184,70 @@ function PayrollRuns({ canRunPayroll, canApprove }) {
 
       {selectedRun && (
         <div className="card overflow-x-auto">
+          <div className="px-4 pt-4">
+            <h3 className="font-semibold text-slate-800 dark:text-white">Payroll Summary</h3>
+            <p className="text-xs text-slate-400 mb-2">Full breakdown per employee — visible to everyone with payroll access, regardless of approval stage.</p>
+          </div>
           <table className="w-full text-sm">
             <thead className="bg-slate-50 dark:bg-slate-800/50 text-slate-500 dark:text-slate-400">
-              <tr><th className="text-left px-4 py-3">Employee</th><th className="text-left px-4 py-3">Net Pay</th><th className="text-left px-4 py-3">Payslip</th></tr>
+              <tr>
+                <th className="text-left px-3 py-3">Employee</th>
+                <th className="text-right px-3 py-3">Basic</th>
+                <th className="text-right px-3 py-3">Housing</th>
+                <th className="text-right px-3 py-3">Transport</th>
+                <th className="text-right px-3 py-3">Other Allow.</th>
+                <th className="text-right px-3 py-3">Overtime</th>
+                <th className="text-right px-3 py-3">PAYE</th>
+                <th className="text-right px-3 py-3">Pension</th>
+                <th className="text-right px-3 py-3">NHF</th>
+                <th className="text-right px-3 py-3">Net Pay</th>
+                <th className="text-left px-3 py-3">Payslip</th>
+              </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {payslips.map((p) => (
-                <tr key={p.id}>
-                  <td className="px-4 py-3">{p.employee.firstName} {p.employee.lastName}</td>
-                  <td className="px-4 py-3">{p.netPay.toFixed(2)}</td>
-                  <td className="px-4 py-3">
-                    {p.pdfUrl ? (
-                      <a href={p.pdfUrl} target="_blank" rel="noreferrer" className="text-xs text-estrada-red hover:underline">Download</a>
-                    ) : (
-                      <span className="text-xs text-slate-400">Generated automatically once fully approved</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-              {payslips.length === 0 && <tr><td className="px-4 py-6 text-slate-400" colSpan={3}>No payslips in this run yet — process it first.</td></tr>}
+              {payslips.map((p) => {
+                const { housing, transport, other } = splitAllowances(p.breakdown);
+                return (
+                  <tr key={p.id}>
+                    <td className="px-3 py-3">{p.employee.firstName} {p.employee.lastName}</td>
+                    <td className="px-3 py-3 text-right">{p.basicSalary.toFixed(2)}</td>
+                    <td className="px-3 py-3 text-right">{housing.toFixed(2)}</td>
+                    <td className="px-3 py-3 text-right">{transport.toFixed(2)}</td>
+                    <td className="px-3 py-3 text-right">{other.toFixed(2)}</td>
+                    <td className="px-3 py-3 text-right">{p.overtimePay.toFixed(2)}</td>
+                    <td className="px-3 py-3 text-right">-{p.paye.toFixed(2)}</td>
+                    <td className="px-3 py-3 text-right">-{p.pensionEmployee.toFixed(2)}</td>
+                    <td className="px-3 py-3 text-right">-{p.nhf.toFixed(2)}</td>
+                    <td className="px-3 py-3 text-right font-semibold">{p.netPay.toFixed(2)}</td>
+                    <td className="px-3 py-3">
+                      {p.pdfUrl ? (
+                        <a href={p.pdfUrl} target="_blank" rel="noreferrer" className="text-xs text-estrada-red hover:underline">Download</a>
+                      ) : (
+                        <span className="text-xs text-slate-400">On approval</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+              {payslips.length === 0 && <tr><td className="px-3 py-6 text-slate-400" colSpan={11}>No payslips in this run yet — process it first.</td></tr>}
             </tbody>
+            {payslips.length > 0 && (
+              <tfoot className="bg-slate-50 dark:bg-slate-800/50 font-semibold text-slate-700 dark:text-slate-200">
+                <tr>
+                  <td className="px-3 py-3">Total</td>
+                  <td className="px-3 py-3 text-right">{totals.basic.toFixed(2)}</td>
+                  <td className="px-3 py-3 text-right">{totals.housing.toFixed(2)}</td>
+                  <td className="px-3 py-3 text-right">{totals.transport.toFixed(2)}</td>
+                  <td className="px-3 py-3 text-right">{totals.other.toFixed(2)}</td>
+                  <td className="px-3 py-3 text-right">{totals.overtime.toFixed(2)}</td>
+                  <td className="px-3 py-3 text-right">-{totals.paye.toFixed(2)}</td>
+                  <td className="px-3 py-3 text-right">-{totals.pension.toFixed(2)}</td>
+                  <td className="px-3 py-3 text-right">-{totals.nhf.toFixed(2)}</td>
+                  <td className="px-3 py-3 text-right">{totals.net.toFixed(2)}</td>
+                  <td></td>
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
       )}
@@ -173,16 +255,15 @@ function PayrollRuns({ canRunPayroll, canApprove }) {
   );
 }
 
-// Housing and Transport are always present as dedicated fields (Basic + Housing + Transport
-// = the company's default "BHT" salary format). Under the hood they're still just entries
-// in the generic `allowances` array the backend already understands — no API change needed.
-// "Other Allowances" below covers anything beyond Housing/Transport (bonuses, top-ups, etc).
 function SalaryStructures() {
   const [employees, setEmployees] = useState([]);
   const [employeeId, setEmployeeId] = useState('');
   const [basicSalary, setBasicSalary] = useState('');
   const [housing, setHousing] = useState('');
   const [transport, setTransport] = useState('');
+  const [payeEnabled, setPayeEnabled] = useState(false);
+  const [pensionEnabled, setPensionEnabled] = useState(false);
+  const [nhfEnabled, setNhfEnabled] = useState(false);
   const [otherAllowances, setOtherAllowances] = useState([]);
   const [deductions, setDeductions] = useState([]);
 
@@ -201,6 +282,9 @@ function SalaryStructures() {
     setTransport(transportEntry?.amount ?? '');
     setOtherAllowances(rest);
     setDeductions(data.structure?.deductions || []);
+    setPayeEnabled(data.structure?.payeEnabled ?? false);
+    setPensionEnabled(data.structure?.pensionEnabled ?? false);
+    setNhfEnabled(data.structure?.nhfEnabled ?? false);
   }
 
   function addOtherAllowance() {
@@ -235,6 +319,9 @@ function SalaryStructures() {
       basicSalary: Number(basicSalary) || 0,
       allowances,
       deductions,
+      payeEnabled,
+      pensionEnabled,
+      nhfEnabled,
     });
     alert('Salary structure saved');
   }
@@ -266,6 +353,27 @@ function SalaryStructures() {
                 <label className="label">Transport Allowance</label>
                 <input type="number" className="input" value={transport} onChange={(e) => setTransport(e.target.value)} />
               </div>
+            </div>
+          </div>
+
+          <div>
+            <p className="label !mb-2">Statutory Deductions</p>
+            <p className="text-xs text-slate-400 mb-3">
+              Off by default for every employee — turn on only what actually applies to this person. Rates come from Statutory Settings.
+            </p>
+            <div className="flex flex-wrap gap-5">
+              <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
+                <input type="checkbox" checked={payeEnabled} onChange={(e) => setPayeEnabled(e.target.checked)} className="h-4 w-4 accent-estrada-red" />
+                Apply PAYE
+              </label>
+              <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
+                <input type="checkbox" checked={pensionEnabled} onChange={(e) => setPensionEnabled(e.target.checked)} className="h-4 w-4 accent-estrada-red" />
+                Apply Pension
+              </label>
+              <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
+                <input type="checkbox" checked={nhfEnabled} onChange={(e) => setNhfEnabled(e.target.checked)} className="h-4 w-4 accent-estrada-red" />
+                Apply NHF
+              </label>
             </div>
           </div>
 

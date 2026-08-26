@@ -5,8 +5,8 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 
 const router = Router();
 router.use(requireAuth);
+const ADMIN_ROLES = ['SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER'];
 
-// ---------- Departments ----------
 router.get('/departments', async (req, res, next) => {
   try {
     const departments = await prisma.department.findMany({ include: { positions: true } });
@@ -14,7 +14,7 @@ router.get('/departments', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.post('/departments', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
+router.post('/departments', requireRole(...ADMIN_ROLES), async (req, res, next) => {
   try {
     const { name } = z.object({ name: z.string().min(1) }).parse(req.body);
     const department = await prisma.department.create({ data: { name } });
@@ -22,14 +22,13 @@ router.post('/departments', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, 
   } catch (err) { next(err); }
 });
 
-router.delete('/departments/:id', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
+router.delete('/departments/:id', requireRole(...ADMIN_ROLES), async (req, res, next) => {
   try {
     await prisma.department.delete({ where: { id: req.params.id } });
     res.status(204).send();
   } catch (err) { next(err); }
 });
 
-// ---------- Positions ----------
 router.get('/positions', async (req, res, next) => {
   try {
     const positions = await prisma.position.findMany({ include: { department: true } });
@@ -37,7 +36,7 @@ router.get('/positions', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.post('/positions', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
+router.post('/positions', requireRole(...ADMIN_ROLES), async (req, res, next) => {
   try {
     const { title, departmentId } = z
       .object({ title: z.string().min(1), departmentId: z.string().optional() })
@@ -47,7 +46,7 @@ router.post('/positions', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, re
   } catch (err) { next(err); }
 });
 
-router.delete('/positions/:id', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
+router.delete('/positions/:id', requireRole(...ADMIN_ROLES), async (req, res, next) => {
   try {
     await prisma.position.delete({ where: { id: req.params.id } });
     res.status(204).send();

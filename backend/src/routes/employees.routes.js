@@ -7,8 +7,9 @@ import { logActivity } from '../utils/activityLog.js';
 const router = Router();
 router.use(requireAuth);
 
-// List / search employees
-router.get('/', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'PAYROLL_OFFICER', 'TEAM_LEAD'), async (req, res, next) => {
+const ADMIN_ROLES = ['SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER'];
+
+router.get('/', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER', 'PAYROLL_OFFICER', 'TEAM_LEAD'), async (req, res, next) => {
   try {
     const { q, departmentId, clientId, siteId, employmentStatus, archived } = req.query;
     const employees = await prisma.employee.findMany({
@@ -27,7 +28,6 @@ router.get('/', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'PAYROLL_OFFICER', 'TEAM_
               ],
             }
           : {}),
-        // Team Leads only see their own direct reports
         ...(req.user.role === 'TEAM_LEAD' ? { teamLeadId: req.user.employee?.id } : {}),
       },
       include: { department: true, position: true, client: true, site: true },
@@ -39,13 +39,7 @@ router.get('/', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'PAYROLL_OFFICER', 'TEAM_
   }
 });
 
-// Eligible line-manager candidates for the Edit Assignment "Team Lead" dropdown.
-// Team Lead-role candidates are scoped to the same site (they're physically there);
-// HR Admin / Super Admin are always included regardless of their own site, since they
-// may need to stand in as line manager for a small/unstaffed site and already see
-// every request at the HR approval stage anyway.
-// IMPORTANT: declared before "/:id" so Express doesn't treat this as an :id param.
-router.get('/eligible-team-leads', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
+router.get('/eligible-team-leads', requireRole(...ADMIN_ROLES), async (req, res, next) => {
   try {
     const { siteId, excludeEmployeeId } = req.query;
     const candidates = await prisma.employee.findMany({
@@ -53,7 +47,7 @@ router.get('/eligible-team-leads', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async
         archived: false,
         ...(excludeEmployeeId ? { id: { not: excludeEmployeeId } } : {}),
         OR: [
-          { user: { role: { in: ['HR_ADMIN', 'SUPER_ADMIN'] } } },
+          { user: { role: { in: ['HR_ADMIN', 'HR_MANAGER', 'SUPER_ADMIN'] } } },
           { user: { role: 'TEAM_LEAD' }, ...(siteId ? { siteId } : {}) },
         ],
       },
@@ -115,7 +109,6 @@ const updateSchema = z.object({
   pensionAdmin: z.string().optional(),
 });
 
-// Employee completes/edits their own biodata, or HR edits any profile (including assignment)
 router.patch('/:id', async (req, res, next) => {
   try {
     const data = updateSchema.parse(req.body);
@@ -123,11 +116,9 @@ router.patch('/:id', async (req, res, next) => {
     if (!target) return res.status(404).json({ message: 'Employee not found' });
 
     const isSelf = target.userId === req.user.id;
-    const isPrivileged = ['SUPER_ADMIN', 'HR_ADMIN'].includes(req.user.role);
+    const isPrivileged = ADMIN_ROLES.includes(req.user.role);
     if (!isSelf && !isPrivileged) return res.status(403).json({ message: 'Not permitted' });
 
-    // Validate team lead assignment: no self-assignment, and the candidate must hold an
-    // eligible role — otherwise a leave request could get stuck with nobody able to act on it.
     if (data.teamLeadId) {
       if (data.teamLeadId === target.id) {
         return res.status(400).json({ message: 'An employee cannot be their own team lead' });
@@ -136,8 +127,8 @@ router.patch('/:id', async (req, res, next) => {
         where: { id: data.teamLeadId },
         include: { user: { select: { role: true } } },
       });
-      if (!candidate || !['TEAM_LEAD', 'HR_ADMIN', 'SUPER_ADMIN'].includes(candidate.user.role)) {
-        return res.status(400).json({ message: 'Selected team lead must have the Team Lead, HR Admin, or Super Admin role' });
+      if (!candidate || !['TEAM_LEAD', 'HR_ADMIN', 'HR_MANAGER', 'SUPER_ADMIN'].includes(candidate.user.role)) {
+        return res.status(400).json({ message: 'Selected team lead must have the Team Lead, HR Admin, HR Manager, or Super Admin role' });
       }
     }
 
@@ -172,7 +163,7 @@ router.post('/:id/submit-onboarding', async (req, res, next) => {
   }
 });
 
-router.post('/:id/approve-onboarding', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
+router.post('/:id/approve-onboarding', requireRole(...ADMIN_ROLES), async (req, res, next) => {
   try {
     const employee = await prisma.employee.update({
       where: { id: req.params.id },
@@ -185,7 +176,7 @@ router.post('/:id/approve-onboarding', requireRole('SUPER_ADMIN', 'HR_ADMIN'), a
   }
 });
 
-router.post('/:id/archive', requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
+router.post('/:id/archive', requireRole(...ADMIN_ROLES), async (req, res, next) => {
   try {
     const employee = await prisma.employee.update({
       where: { id: req.params.id },

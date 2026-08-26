@@ -1,12 +1,18 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import api from '../../lib/api.js';
+import api, { downloadFile } from '../../lib/api.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import StatusBadge from '../../components/shared/StatusBadge.jsx';
 
+// Nigeria-aware "today" — new Date().toISOString().slice(0,10) reads UTC, which can show
+// yesterday's date during the 12am-1am Lagos window. This always reflects Lagos's calendar day.
+function todayLagosDateStr() {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Lagos' }).format(new Date());
+}
+
 export default function Attendance() {
   const { user } = useAuth();
-  const isPrivileged = ['SUPER_ADMIN', 'HR_ADMIN', 'PAYROLL_OFFICER', 'TEAM_LEAD'].includes(user?.role);
+  const isPrivileged = ['SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER', 'PAYROLL_OFFICER', 'TEAM_LEAD'].includes(user?.role);
   const [tab, setTab] = useState('Daily Log');
 
   return (
@@ -143,7 +149,7 @@ function AttendanceTable() {
   const [rows, setRows] = useState([]);
   const [sites, setSites] = useState([]);
   const [loading, setLoading] = useState(true);
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = todayLagosDateStr();
   const [filters, setFilters] = useState({ from: todayStr, to: todayStr, siteId: '', status: searchParams.get('status') || '' });
 
   async function load() {
@@ -167,6 +173,7 @@ function AttendanceTable() {
 
   const lateCount = rows.filter((r) => r.status === 'LATE').length;
   const absentCount = rows.filter((r) => r.status === 'ABSENT').length;
+  const presentCount = rows.filter((r) => ['PRESENT', 'LATE', 'OVERTIME'].includes(r.status)).length;
   const missingCheckoutCount = rows.filter((r) => r.status === 'MISSING_CHECKOUT').length;
 
   return (
@@ -199,10 +206,11 @@ function AttendanceTable() {
         <button onClick={() => setFilters({ from: todayStr, to: todayStr, siteId: '', status: '' })} className="btn-secondary text-sm">Reset to today</button>
       </div>
 
-      {!loading && (filters.from === todayStr && filters.to === todayStr) && (
+      {!loading && (
         <div className="flex flex-wrap gap-3 text-sm">
-          <span className="badge bg-amber-100 text-amber-700">{lateCount} late today</span>
-          <span className="badge bg-red-100 text-red-700">{absentCount} absent today</span>
+          <span className="badge bg-green-100 text-green-700">{presentCount} present</span>
+          <span className="badge bg-amber-100 text-amber-700">{lateCount} late</span>
+          <span className="badge bg-red-100 text-red-700">{absentCount} absent</span>
           {missingCheckoutCount > 0 && <span className="badge bg-red-100 text-red-700">{missingCheckoutCount} missing checkout</span>}
         </div>
       )}
@@ -255,6 +263,7 @@ function MonthlyReport() {
   const [siteId, setSiteId] = useState('');
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -269,9 +278,15 @@ function MonthlyReport() {
 
   useEffect(() => { load(); }, [month, year, siteId]); // eslint-disable-line
 
-  function exportExcel() {
-    const params = new URLSearchParams({ month, year, ...(siteId ? { siteId } : {}) });
-    window.open(`${import.meta.env.VITE_API_URL}/attendance/monthly-report/export?${params.toString()}`, '_blank');
+  async function exportExcel() {
+    setExporting(true);
+    try {
+      await downloadFile('/attendance/monthly-report/export', { month, year, siteId: siteId || undefined }, `attendance-report-${month}-${year}.xlsx`);
+    } catch (err) {
+      alert('Export failed — please try again.');
+    } finally {
+      setExporting(false);
+    }
   }
 
   return (
@@ -292,7 +307,7 @@ function MonthlyReport() {
             {sites.map((s) => <option key={s.id} value={s.id}>{s.client?.name} — {s.name}</option>)}
           </select>
         </div>
-        <button onClick={exportExcel} className="btn-primary text-sm">Export Excel</button>
+        <button onClick={exportExcel} disabled={exporting} className="btn-primary text-sm">{exporting ? 'Exporting…' : 'Export Excel'}</button>
       </div>
       <p className="text-xs text-slate-400">
         This report is for review and record-keeping today — payroll doesn't pull from it automatically yet, that integration is coming next.

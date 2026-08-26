@@ -384,6 +384,12 @@ model SalaryStructure {
   basicSalary  Float
   allowances   Json     @default("[]") // [{ name, amount }] — Housing/Transport included by default (BHT)
   deductions   Json     @default("[]") // [{ name, amount }]
+  // Statutory deductions are OFF by default per employee — must be explicitly enabled.
+  // Previously PAYE/Pension/NHF applied to every employee uniformly with no way to exclude
+  // anyone (contractors, exempt staff, different arrangements), which threw off net pay.
+  payeEnabled     Boolean @default(false)
+  pensionEnabled  Boolean @default(false)
+  nhfEnabled      Boolean @default(false)
   effectiveFrom DateTime @default(now())
   updatedAt    DateTime @updatedAt
 }

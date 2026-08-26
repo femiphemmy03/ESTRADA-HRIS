@@ -5,6 +5,7 @@ import StatusBadge from '../../components/shared/StatusBadge.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 
 const TABS = ['Overview', 'Timeline'];
+const ADMIN_ROLES = ['SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER'];
 
 export default function EmployeeProfile() {
   const { id } = useParams();
@@ -40,7 +41,7 @@ export default function EmployeeProfile() {
 
   if (!employee) return <p className="text-slate-400">Loading…</p>;
 
-  const isPrivileged = ['SUPER_ADMIN', 'HR_ADMIN'].includes(user?.role);
+  const isPrivileged = ADMIN_ROLES.includes(user?.role);
 
   return (
     <div className="space-y-5">
@@ -173,8 +174,6 @@ function AssignmentModal({ employee, onClose, onSaved }) {
     );
   }, []);
 
-  // Reload eligible team lead candidates whenever the selected site changes, since
-  // Team Lead-role candidates are scoped to that site (HR Admin/Super Admin always included).
   useEffect(() => {
     api
       .get('/employees/eligible-team-leads', { params: { siteId: form.siteId || undefined, excludeEmployeeId: employee.id } })
@@ -188,6 +187,7 @@ function AssignmentModal({ employee, onClose, onSaved }) {
   function roleLabel(role) {
     if (role === 'TEAM_LEAD') return 'Team Lead';
     if (role === 'HR_ADMIN') return 'HR Admin';
+    if (role === 'HR_MANAGER') return 'HR Manager';
     if (role === 'SUPER_ADMIN') return 'Super Admin';
     return role;
   }
@@ -263,7 +263,7 @@ function AssignmentModal({ employee, onClose, onSaved }) {
             ))}
           </select>
           <p className="text-xs text-slate-400 mt-1">
-            This person approves this employee's leave requests first, before HR gives final approval. Team Leads shown here are limited to the site selected above; HR Admin/Super Admin are always available.
+            This person approves this employee's leave requests first, before HR gives final approval. Team Leads shown here are limited to the site selected above; HR Admin/HR Manager/Super Admin are always available.
           </p>
         </div>
 

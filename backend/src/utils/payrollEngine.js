@@ -16,13 +16,6 @@ async function getActiveSettings(type, asOfDate) {
   });
 }
 
-/**
- * A PayrollSettings.config for type=PAYE looks like:
- * { "mode": "BRACKETS", "consolidatedReliefFlat": 200000, "consolidatedReliefPercent": 0.01,
- *   "brackets": [{ "upTo": 300000, "rate": 0.07 }, { "upTo": 600000, "rate": 0.11 }, ...] }
- * For PENSION_EMPLOYEE / NHF: { "mode": "FLAT_PERCENT", "percent": 0.08, "base": "BASIC_PLUS_HOUSING_TRANSPORT" }
- * Admins configure this from the Payroll Settings screen — nothing here is hardcoded to Nigerian law directly.
- */
 function applyFlatPercent(config, base) {
   return round2(base * (config.percent ?? 0));
 }
@@ -51,6 +44,12 @@ function round2(n) {
 
 /**
  * Computes a full payslip breakdown for one employee for one payroll period.
+ *
+ * PAYE, Pension, and NHF are only applied if the employee's salary structure has the
+ * corresponding toggle enabled (payeEnabled / pensionEnabled / nhfEnabled) — these default
+ * to false, so nothing is deducted for an employee until someone explicitly turns it on.
+ * This matters because not every employee has the same statutory arrangement (contractors,
+ * exempt staff, different pension schemes, etc.) — a blanket company-wide rule doesn't fit.
  */
 export async function computePayslip({ salaryStructure, overtimeHours = 0, overtimeRate = 0, asOfDate = new Date() }) {
   const basic = salaryStructure.basicSalary;
@@ -61,23 +60,31 @@ export async function computePayslip({ salaryStructure, overtimeHours = 0, overt
   const grossPay = basic + grossAllowances;
   const overtimePay = round2(overtimeHours * overtimeRate);
 
-  const pensionSettings = await getActiveSettings('PENSION_EMPLOYEE', asOfDate);
-  const nhfSettings = await getActiveSettings('NHF', asOfDate);
-  const payeSettings = await getActiveSettings('PAYE', asOfDate);
+  let pensionEmployee = 0;
+  if (salaryStructure.pensionEnabled) {
+    const pensionSettings = await getActiveSettings('PENSION_EMPLOYEE', asOfDate);
+    const pensionBase = basic + grossAllowances;
+    pensionEmployee = pensionSettings ? applyFlatPercent(pensionSettings.config, pensionBase) : 0;
+  }
 
-  const pensionBase = basic + grossAllowances;
-  const pensionEmployee = pensionSettings ? applyFlatPercent(pensionSettings.config, pensionBase) : 0;
-  const nhf = nhfSettings ? applyFlatPercent(nhfSettings.config, basic) : 0;
+  let nhf = 0;
+  if (salaryStructure.nhfEnabled) {
+    const nhfSettings = await getActiveSettings('NHF', asOfDate);
+    nhf = nhfSettings ? applyFlatPercent(nhfSettings.config, basic) : 0;
+  }
 
   let paye = 0;
-  if (payeSettings) {
-    const annualGross = grossPay * 12;
-    const relief =
-      (payeSettings.config.consolidatedReliefFlat ?? 0) +
-      annualGross * (payeSettings.config.consolidatedReliefPercent ?? 0);
-    const annualTaxable = Math.max(annualGross - relief - pensionEmployee * 12, 0);
-    const annualTax = applyBrackets(payeSettings.config, annualTaxable);
-    paye = round2(annualTax / 12);
+  if (salaryStructure.payeEnabled) {
+    const payeSettings = await getActiveSettings('PAYE', asOfDate);
+    if (payeSettings) {
+      const annualGross = grossPay * 12;
+      const relief =
+        (payeSettings.config.consolidatedReliefFlat ?? 0) +
+        annualGross * (payeSettings.config.consolidatedReliefPercent ?? 0);
+      const annualTaxable = Math.max(annualGross - relief - pensionEmployee * 12, 0);
+      const annualTax = applyBrackets(payeSettings.config, annualTaxable);
+      paye = round2(annualTax / 12);
+    }
   }
 
   const otherDeductions = deductions.reduce((sum, d) => sum + d.amount, 0);
@@ -96,8 +103,12 @@ export async function computePayslip({ salaryStructure, overtimeHours = 0, overt
     breakdown: {
       allowances,
       deductions,
-      pensionBase,
       grossPay: round2(grossPay),
+      statutoryApplied: {
+        paye: !!salaryStructure.payeEnabled,
+        pension: !!salaryStructure.pensionEnabled,
+        nhf: !!salaryStructure.nhfEnabled,
+      },
     },
   };
 }

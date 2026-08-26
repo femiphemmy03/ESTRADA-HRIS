@@ -4,24 +4,21 @@ import api from '../../lib/api.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import StatusBadge from '../../components/shared/StatusBadge.jsx';
 
+const ADMIN_ROLES = ['SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER'];
+
 export default function Onboarding() {
   const { user } = useAuth();
-  const isPrivileged = ['SUPER_ADMIN', 'HR_ADMIN'].includes(user?.role);
+  const isPrivileged = ADMIN_ROLES.includes(user?.role);
   return isPrivileged ? <OnboardingManagement /> : <OnboardingSelfService />;
 }
 
-// ---------------------------------------------------------
-// HR / Super Admin — monitor everyone currently onboarding
-// ---------------------------------------------------------
 function OnboardingManagement() {
   const [employees, setEmployees] = useState([]);
-  const [progress, setProgress] = useState({}); // employeeId -> { done, total }
+  const [progress, setProgress] = useState({});
   const [loading, setLoading] = useState(true);
 
   async function load() {
     setLoading(true);
-    // Single bulk call instead of one request per employee — see backend
-    // GET /onboarding/summary for how this is computed in one round trip.
     const { data } = await api.get('/onboarding/summary');
     setEmployees(data.employees);
     setProgress(data.progress);
@@ -103,9 +100,6 @@ function OnboardingManagement() {
   );
 }
 
-// ---------------------------------------------------------
-// Employee self-service — checklist, biodata, submit
-// ---------------------------------------------------------
 function OnboardingSelfService() {
   const { employee, refresh } = useAuth();
   const [tasks, setTasks] = useState([]);

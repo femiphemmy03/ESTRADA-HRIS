@@ -10,7 +10,9 @@ export default function Leave() {
   const [myRequests, setMyRequests] = useState([]);
   const [queue, setQueue] = useState([]);
   const [form, setForm] = useState({ leaveTypeId: '', startDate: '', endDate: '', reason: '' });
-  const canApprove = ['TEAM_LEAD', 'SUPER_ADMIN', 'HR_ADMIN'].includes(user?.role);
+  // HR Admin no longer decides leave directly — that final call now belongs to HR Manager
+  // (Super Admin always retains direct authority, no approval chain needed for them).
+  const canApprove = ['TEAM_LEAD', 'HR_MANAGER', 'SUPER_ADMIN'].includes(user?.role);
 
   async function load() {
     const { data: typesData } = await api.get('/leave/types');
@@ -133,10 +135,10 @@ export default function Leave() {
                   </p>
                 </div>
                 <div className="flex gap-2">
-                  {r.status === 'PENDING_MANAGER' && ['TEAM_LEAD', 'SUPER_ADMIN', 'HR_ADMIN'].includes(user.role) && (
+                  {r.status === 'PENDING_MANAGER' && ['TEAM_LEAD', 'HR_MANAGER', 'SUPER_ADMIN'].includes(user.role) && (
                     <button onClick={() => managerApprove(r.id)} className="btn-secondary text-xs">Manager Approve</button>
                   )}
-                  {r.status === 'PENDING_HR' && ['SUPER_ADMIN', 'HR_ADMIN'].includes(user.role) && (
+                  {r.status === 'PENDING_HR' && ['HR_MANAGER', 'SUPER_ADMIN'].includes(user.role) && (
                     <>
                       <button onClick={() => hrDecision(r.id, true)} className="btn-primary text-xs">Approve</button>
                       <button onClick={() => hrDecision(r.id, false)} className="btn-secondary text-xs text-red-600">Reject</button>
