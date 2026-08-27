@@ -1,13 +1,31 @@
 import { prisma } from '../lib/prisma.js';
 
 /**
- * Fetches the active PayrollSettings rows for a given "as of" date.
- * Effective-dated so historical payroll runs stay accurate even after rules change.
+ * Fetches the applicable PayrollSettings row for a given type/date/client.
+ * A client-specific rate (clientId matches) takes priority over the company-wide
+ * fallback (clientId is null) if both exist for the same period — this lets an
+ * outsourcing company honor a specific client's contractual pension/statutory
+ * arrangement without it leaking into every other client's payroll.
  */
-async function getActiveSettings(type, asOfDate) {
+async function getActiveSettings(type, asOfDate, clientId) {
+  if (clientId) {
+    const clientSpecific = await prisma.payrollSettings.findFirst({
+      where: {
+        type,
+        clientId,
+        isActive: true,
+        effectiveFrom: { lte: asOfDate },
+        OR: [{ effectiveTo: null }, { effectiveTo: { gte: asOfDate } }],
+      },
+      orderBy: { effectiveFrom: 'desc' },
+    });
+    if (clientSpecific) return clientSpecific;
+  }
+
   return prisma.payrollSettings.findFirst({
     where: {
       type,
+      clientId: null,
       isActive: true,
       effectiveFrom: { lte: asOfDate },
       OR: [{ effectiveTo: null }, { effectiveTo: { gte: asOfDate } }],
@@ -48,10 +66,13 @@ function round2(n) {
  * PAYE, Pension, and NHF are only applied if the employee's salary structure has the
  * corresponding toggle enabled (payeEnabled / pensionEnabled / nhfEnabled) — these default
  * to false, so nothing is deducted for an employee until someone explicitly turns it on.
- * This matters because not every employee has the same statutory arrangement (contractors,
- * exempt staff, different pension schemes, etc.) — a blanket company-wide rule doesn't fit.
+ *
+ * The actual rates come from Statutory Settings, resolved per-client (falls back to the
+ * company-wide rate if the employee's client has no specific override). There is no
+ * hardcoded/example rate anywhere in this file — if nothing has been configured yet,
+ * the toggle simply has no effect, rather than silently applying a guessed number.
  */
-export async function computePayslip({ salaryStructure, overtimeHours = 0, overtimeRate = 0, asOfDate = new Date() }) {
+export async function computePayslip({ salaryStructure, clientId = null, overtimeHours = 0, overtimeRate = 0, asOfDate = new Date() }) {
   const basic = salaryStructure.basicSalary;
   const allowances = salaryStructure.allowances || [];
   const deductions = salaryStructure.deductions || [];
@@ -61,21 +82,26 @@ export async function computePayslip({ salaryStructure, overtimeHours = 0, overt
   const overtimePay = round2(overtimeHours * overtimeRate);
 
   let pensionEmployee = 0;
+  let pensionSettingsUsed = null;
   if (salaryStructure.pensionEnabled) {
-    const pensionSettings = await getActiveSettings('PENSION_EMPLOYEE', asOfDate);
+    const pensionSettings = await getActiveSettings('PENSION_EMPLOYEE', asOfDate, clientId);
     const pensionBase = basic + grossAllowances;
     pensionEmployee = pensionSettings ? applyFlatPercent(pensionSettings.config, pensionBase) : 0;
+    pensionSettingsUsed = pensionSettings?.name || null;
   }
 
   let nhf = 0;
+  let nhfSettingsUsed = null;
   if (salaryStructure.nhfEnabled) {
-    const nhfSettings = await getActiveSettings('NHF', asOfDate);
+    const nhfSettings = await getActiveSettings('NHF', asOfDate, clientId);
     nhf = nhfSettings ? applyFlatPercent(nhfSettings.config, basic) : 0;
+    nhfSettingsUsed = nhfSettings?.name || null;
   }
 
   let paye = 0;
+  let payeSettingsUsed = null;
   if (salaryStructure.payeEnabled) {
-    const payeSettings = await getActiveSettings('PAYE', asOfDate);
+    const payeSettings = await getActiveSettings('PAYE', asOfDate, clientId);
     if (payeSettings) {
       const annualGross = grossPay * 12;
       const relief =
@@ -84,6 +110,7 @@ export async function computePayslip({ salaryStructure, overtimeHours = 0, overt
       const annualTaxable = Math.max(annualGross - relief - pensionEmployee * 12, 0);
       const annualTax = applyBrackets(payeSettings.config, annualTaxable);
       paye = round2(annualTax / 12);
+      payeSettingsUsed = payeSettings.name;
     }
   }
 
@@ -108,6 +135,12 @@ export async function computePayslip({ salaryStructure, overtimeHours = 0, overt
         paye: !!salaryStructure.payeEnabled,
         pension: !!salaryStructure.pensionEnabled,
         nhf: !!salaryStructure.nhfEnabled,
+      },
+      // Which specific rate/settings row was actually used, for auditability.
+      statutorySettingsUsed: {
+        paye: payeSettingsUsed,
+        pension: pensionSettingsUsed,
+        nhf: nhfSettingsUsed,
       },
     },
   };

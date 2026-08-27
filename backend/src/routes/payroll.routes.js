@@ -65,7 +65,10 @@ router.get('/salary-structure/:employeeId', requireRole(...PAYROLL_ROLES), async
 // ---------- Payroll Settings ----------
 router.get('/settings', requireRole(...PAYROLL_ROLES), async (req, res, next) => {
   try {
-    const settings = await prisma.payrollSettings.findMany({ orderBy: { effectiveFrom: 'desc' } });
+    const settings = await prisma.payrollSettings.findMany({
+      orderBy: { effectiveFrom: 'desc' },
+      include: { client: { select: { name: true } } },
+    });
     res.json({ settings });
   } catch (err) { next(err); }
 });
@@ -74,6 +77,7 @@ const settingsSchema = z.object({
   name: z.string().min(1),
   type: z.enum(['PAYE', 'PENSION_EMPLOYEE', 'PENSION_EMPLOYER', 'NHF', 'CUSTOM']),
   config: z.record(z.any()),
+  clientId: z.string().optional().nullable(), // null/omitted = company-wide fallback
   effectiveFrom: z.string(),
   effectiveTo: z.string().optional(),
 });
@@ -82,7 +86,12 @@ router.post('/settings', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER'), a
   try {
     const data = settingsSchema.parse(req.body);
     const setting = await prisma.payrollSettings.create({
-      data: { ...data, effectiveFrom: new Date(data.effectiveFrom), effectiveTo: data.effectiveTo ? new Date(data.effectiveTo) : null },
+      data: {
+        ...data,
+        clientId: data.clientId || null,
+        effectiveFrom: new Date(data.effectiveFrom),
+        effectiveTo: data.effectiveTo ? new Date(data.effectiveTo) : null,
+      },
     });
     res.status(201).json({ setting });
   } catch (err) { next(err); }
@@ -158,7 +167,7 @@ router.post('/runs/:id/process', requireRole(...PAYROLL_ROLES), async (req, res,
     const results = [];
 
     for (const emp of employees) {
-      const computed = await computePayslip({ salaryStructure: emp.salaryStructure, asOfDate });
+      const computed = await computePayslip({ salaryStructure: emp.salaryStructure, clientId: emp.clientId, asOfDate });
       const payslip = await prisma.payslip.upsert({
         where: { payrollRunId_employeeId: { payrollRunId: run.id, employeeId: emp.id } },
         update: computed,

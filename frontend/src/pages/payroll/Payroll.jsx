@@ -408,39 +408,69 @@ function SalaryStructures() {
 
 function StatutorySettings() {
   const [settings, setSettings] = useState([]);
-  const [form, setForm] = useState({ name: '', type: 'PENSION_EMPLOYEE', percent: '', effectiveFrom: '' });
+  const [clients, setClients] = useState([]);
+  const [form, setForm] = useState({ name: '', type: 'PENSION_EMPLOYEE', percent: '', clientId: '', effectiveFrom: '' });
 
   async function load() {
     const { data } = await api.get('/payroll/settings');
     setSettings(data.settings);
   }
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    api.get('/clients').then((r) => setClients(r.data.clients)).catch(() => {});
+  }, []);
 
   async function create() {
     await api.post('/payroll/settings', {
       name: form.name,
       type: form.type,
       config: { percent: Number(form.percent) / 100 },
+      clientId: form.clientId || null,
       effectiveFrom: form.effectiveFrom,
     });
-    setForm({ name: '', type: 'PENSION_EMPLOYEE', percent: '', effectiveFrom: '' });
+    setForm({ name: '', type: 'PENSION_EMPLOYEE', percent: '', clientId: '', effectiveFrom: '' });
     load();
   }
 
+  async function deactivate(id) {
+    if (!confirm('Deactivate this rate? It will stop applying to any employee going forward.')) return;
+    await api.patch(`/payroll/settings/${id}`, { isActive: false });
+    load();
+  }
+
+  const anyExampleRatesActive = settings.some((s) => s.isActive && (s.name.toLowerCase().includes('example') || s.name.toLowerCase().includes('8%')));
+
   return (
     <div className="space-y-5">
+      {anyExampleRatesActive && (
+        <div className="card p-4 bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800">
+          <p className="text-sm text-amber-700 dark:text-amber-300">
+            ⚠️ One or more rates below look like leftover example/placeholder values. Confirm the real percentage with your finance/compliance team, then either edit or deactivate anything that isn't accurate before enabling it for any employee.
+          </p>
+        </div>
+      )}
+
       <div className="card p-6 space-y-4">
-        <h2 className="font-semibold text-slate-800 dark:text-white">Add Statutory Rule (flat %)</h2>
-        <p className="text-xs text-slate-400">For PAYE tax bands, edit brackets directly via the API — this quick form covers flat-percent rules like Pension/NHF.</p>
-        <div className="grid sm:grid-cols-4 gap-3">
+        <div>
+          <h2 className="font-semibold text-slate-800 dark:text-white">Add Statutory Rule (flat %)</h2>
+          <p className="text-xs text-slate-400 mt-1">
+            For PAYE tax bands (progressive, not flat %), add the base rule here then edit its bracket config via the API. Leave "Client" as Company-wide unless a specific client's contract requires a different rate.
+          </p>
+        </div>
+        <div className="grid sm:grid-cols-5 gap-3">
           <input className="input" placeholder="Name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           <select className="input" value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
             <option value="PENSION_EMPLOYEE">Pension (Employee)</option>
             <option value="PENSION_EMPLOYER">Pension (Employer)</option>
             <option value="NHF">NHF</option>
+            <option value="PAYE">PAYE (flat % only — use API for brackets)</option>
             <option value="CUSTOM">Custom</option>
           </select>
           <input type="number" className="input" placeholder="Percent e.g. 8" value={form.percent} onChange={(e) => setForm({ ...form, percent: e.target.value })} />
+          <select className="input" value={form.clientId} onChange={(e) => setForm({ ...form, clientId: e.target.value })}>
+            <option value="">Company-wide</option>
+            {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
           <input type="date" className="input" value={form.effectiveFrom} onChange={(e) => setForm({ ...form, effectiveFrom: e.target.value })} />
         </div>
         <button onClick={create} className="btn-primary">Add Rule</button>
@@ -449,17 +479,29 @@ function StatutorySettings() {
       <div className="card overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 dark:bg-slate-800/50 text-slate-500 dark:text-slate-400">
-            <tr><th className="text-left px-4 py-3">Name</th><th className="text-left px-4 py-3">Type</th><th className="text-left px-4 py-3">Effective From</th><th className="text-left px-4 py-3">Active</th></tr>
+            <tr>
+              <th className="text-left px-4 py-3">Name</th>
+              <th className="text-left px-4 py-3">Type</th>
+              <th className="text-left px-4 py-3">Applies To</th>
+              <th className="text-left px-4 py-3">Effective From</th>
+              <th className="text-left px-4 py-3">Active</th>
+              <th className="text-left px-4 py-3"></th>
+            </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
             {settings.map((s) => (
               <tr key={s.id}>
                 <td className="px-4 py-3">{s.name}</td>
                 <td className="px-4 py-3">{s.type}</td>
+                <td className="px-4 py-3">{s.client?.name || 'Company-wide'}</td>
                 <td className="px-4 py-3">{new Date(s.effectiveFrom).toDateString()}</td>
-                <td className="px-4 py-3">{s.isActive ? 'Yes' : 'No'}</td>
+                <td className="px-4 py-3">{s.isActive ? <span className="text-green-600">Yes</span> : <span className="text-slate-400">No</span>}</td>
+                <td className="px-4 py-3">
+                  {s.isActive && <button onClick={() => deactivate(s.id)} className="text-xs text-red-600 hover:underline">Deactivate</button>}
+                </td>
               </tr>
             ))}
+            {settings.length === 0 && <tr><td className="px-4 py-6 text-slate-400" colSpan={6}>No statutory rates configured yet.</td></tr>}
           </tbody>
         </table>
       </div>

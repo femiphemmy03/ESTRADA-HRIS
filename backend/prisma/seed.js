@@ -56,41 +56,15 @@ async function main() {
   }
   console.log('Seeded leave types');
 
-  // --- Payroll settings (example configurable statutory rules — adjust in Payroll Settings UI) ---
-  const payeExists = await prisma.payrollSettings.findFirst({ where: { type: 'PAYE', isActive: true } });
-  if (!payeExists) {
-    await prisma.payrollSettings.create({
-      data: {
-        name: 'PAYE (example bands)',
-        type: 'PAYE',
-        effectiveFrom: new Date('2026-01-01'),
-        config: {
-          consolidatedReliefFlat: 200000,
-          consolidatedReliefPercent: 0.01,
-          brackets: [
-            { upTo: 300000, rate: 0.07 },
-            { upTo: 600000, rate: 0.11 },
-            { upTo: 1100000, rate: 0.15 },
-            { upTo: 1600000, rate: 0.19 },
-            { upTo: 3200000, rate: 0.21 },
-          ],
-          topRate: 0.24,
-        },
-      },
-    });
-  }
-  const pensionExists = await prisma.payrollSettings.findFirst({ where: { type: 'PENSION_EMPLOYEE', isActive: true } });
-  if (!pensionExists) {
-    await prisma.payrollSettings.create({
-      data: {
-        name: 'Pension — Employee 8%',
-        type: 'PENSION_EMPLOYEE',
-        effectiveFrom: new Date('2026-01-01'),
-        config: { percent: 0.08 },
-      },
-    });
-  }
-  console.log('Seeded example payroll settings (edit these in Admin > Payroll Settings)');
+  // --- Payroll statutory settings ---
+  // Intentionally NOT seeded. PAYE/Pension/NHF rates are legally sensitive and change
+  // periodically — shipping example/placeholder numbers here created a real risk of
+  // someone unknowingly applying made-up rates to real payroll. Configure the actual,
+  // current rates from Payroll -> Statutory Settings before enabling PAYE/Pension/NHF
+  // for any employee. Rates can also be set per-client (Client & Site relationships)
+  // if a specific client's contract calls for a different arrangement than the
+  // company-wide default.
+  console.log('Statutory settings NOT seeded — configure real rates in Payroll > Statutory Settings before use.');
 
   // --- Document types ---
   const docTypes = [

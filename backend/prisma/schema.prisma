@@ -242,6 +242,7 @@ model Client {
   isActive  Boolean  @default(true)
   sites     Site[]
   employees Employee[]
+  payrollSettings PayrollSettings[]
   createdAt DateTime @default(now())
 }
 
@@ -399,6 +400,8 @@ model PayrollSettings {
   name            String
   type            String   // PAYE | PENSION_EMPLOYEE | PENSION_EMPLOYER | NHF | CUSTOM
   config          Json
+  clientId        String?  // null = company-wide fallback; set = overrides for that specific client
+  client          Client?  @relation(fields: [clientId], references: [id])
   effectiveFrom   DateTime
   effectiveTo     DateTime?
   isActive        Boolean  @default(true)
