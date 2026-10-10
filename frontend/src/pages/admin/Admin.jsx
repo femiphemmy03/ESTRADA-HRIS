@@ -87,10 +87,15 @@ const WEEKDAYS = [
 function AttendanceRules() {
   const [rules, setRules] = useState([]);
   const [sites, setSites] = useState([]);
+  const [clients, setClients] = useState([]);
   const emptyForm = {
     name: '',
+    scopeType: 'CLIENT', // DEFAULT | CLIENT | SITE
     siteId: '',
+    clientId: '',
     isDefault: false,
+    requiredDaysPerMonth: '',
+    prorateSalary: false,
     workingDays: ['MON', 'TUE', 'WED', 'THU', 'FRI'],
     remoteDays: [],
     shiftStart: '08:00',
@@ -110,9 +115,10 @@ function AttendanceRules() {
   const [editingId, setEditingId] = useState(null);
 
   async function load() {
-    const [{ data: r }, { data: s }] = await Promise.all([api.get('/attendance-rules'), api.get('/clients/sites/all')]);
+    const [{ data: r }, { data: s }, { data: c }] = await Promise.all([api.get('/attendance-rules'), api.get('/clients/sites/all'), api.get('/clients')]);
     setRules(r.rules);
     setSites(s.sites);
+    setClients(c.clients);
   }
   useEffect(() => { load(); }, []);
 
@@ -139,8 +145,12 @@ function AttendanceRules() {
     setEditingId(rule.id);
     setForm({
       name: rule.name,
+      scopeType: rule.siteId ? 'SITE' : rule.clientId ? 'CLIENT' : 'DEFAULT',
       siteId: rule.siteId || '',
+      clientId: rule.clientId || '',
       isDefault: rule.isDefault,
+      requiredDaysPerMonth: rule.requiredDaysPerMonth ?? '',
+      prorateSalary: !!rule.prorateSalary,
       workingDays: rule.workingDays ? rule.workingDays.split(',').filter(Boolean) : [],
       remoteDays: rule.remoteDays ? rule.remoteDays.split(',').filter(Boolean) : [],
       shiftStart: rule.shiftStart,
@@ -167,9 +177,17 @@ function AttendanceRules() {
   async function save() {
     if (!form.name.trim()) return alert('Please give this rule a name (e.g. "Lagos Site — Day Shift").');
     if (form.workingDays.length === 0) return alert('Select at least one working day.');
+    if (form.scopeType === 'CLIENT' && !form.clientId) return alert('Choose the client this rule applies to.');
+    if (form.scopeType === 'SITE' && !form.siteId) return alert('Choose the site this rule applies to.');
+    if (form.prorateSalary && !Number(form.requiredDaysPerMonth)) return alert('Enter the required number of present days per month to turn on salary proration.');
+    const { scopeType, ...rest } = form;
     const payload = {
-      ...form,
-      siteId: form.siteId || null,
+      ...rest,
+      siteId: scopeType === 'SITE' ? form.siteId : null,
+      clientId: scopeType === 'CLIENT' ? form.clientId : null,
+      isDefault: scopeType === 'DEFAULT',
+      requiredDaysPerMonth: form.requiredDaysPerMonth === '' ? null : Number(form.requiredDaysPerMonth),
+      prorateSalary: !!form.prorateSalary,
       workingDays: form.workingDays.join(','),
       remoteDays: form.remoteDays.join(','),
       gracePeriodMinutes: Number(form.gracePeriodMinutes),
@@ -178,10 +196,14 @@ function AttendanceRules() {
       overtimeThresholdHours: Number(form.overtimeThresholdHours),
       gpsRadiusMeters: Number(form.gpsRadiusMeters),
     };
-    if (editingId) {
-      await api.patch(`/attendance-rules/${editingId}`, payload);
-    } else {
-      await api.post('/attendance-rules', payload);
+    try {
+      if (editingId) {
+        await api.patch(`/attendance-rules/${editingId}`, payload);
+      } else {
+        await api.post('/attendance-rules', payload);
+      }
+    } catch (err) {
+      return alert(err.response?.data?.message || 'Could not save the rule.');
     }
     cancelEdit();
     load();
@@ -210,12 +232,25 @@ function AttendanceRules() {
             <input className="input" placeholder='e.g. "Head Office — Day Shift"' value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           </div>
           <div>
-            <label className="label">Applies to site</label>
-            <select className="input" value={form.siteId} onChange={(e) => setForm({ ...form, siteId: e.target.value })}>
-              <option value="">Company-wide default (no specific site)</option>
-              {sites.map((s) => <option key={s.id} value={s.id}>{s.client?.name} — {s.name}</option>)}
+            <label className="label">Applies to</label>
+            <select className="input" value={form.scopeType} onChange={(e) => setForm({ ...form, scopeType: e.target.value })}>
+              <option value="CLIENT">A whole client (every site without its own rule)</option>
+              <option value="SITE">One specific site</option>
+              <option value="DEFAULT">Company-wide default</option>
             </select>
-            <p className="text-xs text-slate-400 mt-1">Each site can have at most one rule. Leave blank + tick "default" below for the fallback rule.</p>
+            {form.scopeType === 'CLIENT' && (
+              <select className="input mt-2" value={form.clientId} onChange={(e) => setForm({ ...form, clientId: e.target.value })}>
+                <option value="">Select client…</option>
+                {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            )}
+            {form.scopeType === 'SITE' && (
+              <select className="input mt-2" value={form.siteId} onChange={(e) => setForm({ ...form, siteId: e.target.value })}>
+                <option value="">Select site…</option>
+                {sites.map((s) => <option key={s.id} value={s.id}>{s.client?.name} — {s.name}</option>)}
+              </select>
+            )}
+            <p className="text-xs text-slate-400 mt-1">Rule lookup order: the employee's site rule, then their client's rule, then the company default. Each client or site can have one rule.</p>
           </div>
         </div>
 
@@ -321,10 +356,25 @@ function AttendanceRules() {
           </div>
         </div>
 
-        <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
-          <input type="checkbox" checked={form.isDefault} onChange={(e) => setForm({ ...form, isDefault: e.target.checked })} />
-          Use as the company-wide default rule (applies to any employee whose site has no specific rule)
-        </label>
+        <div className="rounded-lg border border-slate-200 dark:border-slate-800 p-4 space-y-3">
+          <div>
+            <p className="label !mb-0">Fixed attendance for payroll</p>
+            <p className="text-xs text-slate-400 mt-1">
+              Some clients pay for a fixed number of present days a month (for example 20). When proration is on, anyone present fewer days is paid
+              days present ÷ required days of their monthly pay (never more than 100%). Paid leave and public holidays count as present; a half day counts as 0.5.
+            </p>
+          </div>
+          <div className="grid sm:grid-cols-2 gap-4 items-end">
+            <div>
+              <label className="label">Required present days per month</label>
+              <input type="number" min={1} max={31} className="input" placeholder="e.g. 20" value={form.requiredDaysPerMonth} onChange={(e) => setForm({ ...form, requiredDaysPerMonth: e.target.value })} />
+            </div>
+            <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300 pb-2">
+              <input type="checkbox" checked={form.prorateSalary} onChange={(e) => setForm({ ...form, prorateSalary: e.target.checked })} />
+              Prorate salary when fewer days are present
+            </label>
+          </div>
+        </div>
 
         <div className="flex gap-2">
           <button onClick={save} className="btn-primary">{editingId ? 'Save Changes' : 'Create Rule'}</button>
@@ -337,12 +387,12 @@ function AttendanceRules() {
           <thead className="bg-slate-50 dark:bg-slate-800/50 text-slate-500 dark:text-slate-400">
             <tr>
               <th className="text-left px-4 py-3">Name</th>
-              <th className="text-left px-4 py-3">Site</th>
+              <th className="text-left px-4 py-3">Applies to</th>
               <th className="text-left px-4 py-3">Working Days</th>
               <th className="text-left px-4 py-3">Remote Days</th>
               <th className="text-left px-4 py-3">Shift</th>
               <th className="text-left px-4 py-3">Grace</th>
-              <th className="text-left px-4 py-3">Default</th>
+              <th className="text-left px-4 py-3">Required days</th>
               <th className="text-left px-4 py-3"></th>
             </tr>
           </thead>
@@ -350,12 +400,16 @@ function AttendanceRules() {
             {rules.map((r) => (
               <tr key={r.id}>
                 <td className="px-4 py-3">{r.name}</td>
-                <td className="px-4 py-3">{r.site?.name || '— (default)'}</td>
+                <td className="px-4 py-3">
+                  {r.site ? `Site: ${r.site.client?.name ? r.site.client.name + ' — ' : ''}${r.site.name}` : r.client ? `Client: ${r.client.name}` : 'Company default'}
+                </td>
                 <td className="px-4 py-3 text-xs">{r.workingDays}</td>
                 <td className="px-4 py-3 text-xs">{r.remoteDays || '—'}</td>
                 <td className="px-4 py-3">{r.shiftStart} – {r.shiftEnd}</td>
                 <td className="px-4 py-3">{r.gracePeriodMinutes}m</td>
-                <td className="px-4 py-3">{r.isDefault ? 'Yes' : 'No'}</td>
+                <td className="px-4 py-3 text-xs">
+                  {r.requiredDaysPerMonth ? `${r.requiredDaysPerMonth} days${r.prorateSalary ? ' · prorated' : ''}` : '—'}
+                </td>
                 <td className="px-4 py-3 flex gap-2">
                   <button onClick={() => startEdit(r)} className="text-xs text-estrada-red hover:underline">Edit</button>
                   <button onClick={() => remove(r.id)} className="text-xs text-red-600 hover:underline">Delete</button>

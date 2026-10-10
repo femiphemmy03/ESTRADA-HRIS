@@ -91,6 +91,49 @@ enum PayrollRunStatus {
   REJECTED
 }
 
+enum PaymentApproval {
+  PENDING
+  APPROVED
+}
+
+enum PaymentStatus {
+  NOT_PAID
+  PROCESSING
+  SUCCESS
+  FAILED
+}
+
+enum WalletKind {
+  PERSONAL
+  CLIENT
+}
+
+enum WalletStatus {
+  ACTIVE
+  FROZEN
+  CLOSED
+}
+
+enum WalletTxnType {
+  FUNDING
+  SALARY_CREDIT
+  DISBURSEMENT
+  WITHDRAWAL
+  ADJUSTMENT
+}
+
+enum WalletTxnDirection {
+  CREDIT
+  DEBIT
+}
+
+enum WalletTxnStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  REJECTED
+}
+
 enum ExitStatus {
   INITIATED
   CLEARANCE_IN_PROGRESS
@@ -120,6 +163,10 @@ model User {
 
   employee      Employee?
   activityLogs  ActivityLog[] @relation("ActorLogs")
+
+  clientAssignments ClientAssignment[]
+  wallet            Wallet?
+  notifications     Notification[]
 }
 
 // ==========================================================
@@ -188,6 +235,7 @@ model Employee {
   salaryAdvances     SalaryAdvance[]
   exitProcess        ExitProcess?
   siteApprovalsMade  Site[]             @relation("SiteApprovedBy")
+  wallet             Wallet?
 }
 
 model EducationHistory {
@@ -243,6 +291,10 @@ model Client {
   sites     Site[]
   employees Employee[]
   payrollSettings PayrollSettings[]
+  assignments     ClientAssignment[]
+  wallet          Wallet?
+  attendanceRule  AttendanceRule?
+  payrollRuns     PayrollRun[]
   createdAt DateTime @default(now())
 }
 
@@ -276,6 +328,10 @@ model AttendanceRule {
   id                 String   @id @default(uuid())
   siteId             String?  @unique
   site               Site?    @relation(fields: [siteId], references: [id])
+  // A rule can belong to a whole client (applies to every site of that client that has no rule of its own).
+  // Lookup order for an employee: their site's rule -> their client's rule -> the company default.
+  clientId           String?  @unique
+  client             Client?  @relation(fields: [clientId], references: [id])
   isDefault          Boolean  @default(false)
   name               String
   workingDays        String   // csv e.g. "MON,TUE,WED,THU,FRI" — all days attendance is expected (onsite + remote)
@@ -292,6 +348,10 @@ model AttendanceRule {
   weekendPolicy      String?
   holidayPolicy      String?
   requiresApproval   Boolean  @default(false)
+  // Fixed attendance expectation for payroll, e.g. 20 days a month. When prorateSalary is on,
+  // anyone with fewer present days is paid days present / required days of their monthly pay.
+  requiredDaysPerMonth Int?
+  prorateSalary      Boolean  @default(false)
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 }
@@ -412,6 +472,9 @@ model PayrollRun {
   id          String   @id @default(uuid())
   month       Int
   year        Int
+  // One run per client per month. Runs created before client-wise payroll have clientId = null (legacy, company-wide).
+  clientId    String?
+  client      Client?  @relation(fields: [clientId], references: [id])
   status      PayrollRunStatus @default(DRAFT)
 
   // Two-tier approval trail: submitted (by Payroll Officer/HR Admin/Super Admin) ->
@@ -428,7 +491,8 @@ model PayrollRun {
   createdAt   DateTime @default(now())
   payslips    Payslip[]
 
-  @@unique([month, year])
+  @@unique([month, year, clientId])
+  @@index([clientId])
 }
 
 model Payslip {
@@ -449,7 +513,23 @@ model Payslip {
   pdfUrl        String?
   createdAt     DateTime @default(now())
 
+  // Attendance-based proration (null when the client has no fixed-days rule)
+  daysPresent     Float?
+  requiredDays    Int?
+  prorationFactor Float?
+
+  // What the employee actually receives, and the payment trail
+  totalPayable      Float          @default(0)
+  paymentApproval   PaymentApproval @default(PENDING)
+  paymentApprovedById String?
+  paymentApprovedAt DateTime?
+  paymentStatus     PaymentStatus  @default(NOT_PAID)
+  paymentReference  String?
+  paymentMessage    String?
+  paidAt            DateTime?
+
   @@unique([payrollRunId, employeeId])
+  @@index([paymentStatus])
 }
 
 model Loan {
@@ -559,5 +639,97 @@ model ActivityLog {
   action      String
   description String
   metadata    Json?
+  // module + clientId let the Super Admin filter the audit trail (e.g. everything PAYROLL for one client).
+  module      String?
+  clientId    String?
   createdAt   DateTime @default(now())
+
+  @@index([module, createdAt])
+  @@index([clientId])
+}
+
+// ==========================================================
+// CLIENT SCOPING (which admin looks after which client)
+// ==========================================================
+
+model ClientAssignment {
+  id           String   @id @default(uuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  clientId     String
+  client       Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  // Whether this admin may submit funding for this client's wallet.
+  canFund      Boolean  @default(true)
+  assignedById String?
+  createdAt    DateTime @default(now())
+
+  @@unique([userId, clientId])
+  @@index([clientId])
+}
+
+// ==========================================================
+// WALLETS
+// ==========================================================
+// PERSONAL wallets belong to a person (every User has at most one; linked to their Employee
+// record when they have one). CLIENT wallets hold the money an Estrada client has funded for
+// salary disbursement. walletCode is its own identifier — it is NEVER derived from employeeCode,
+// so employee IDs can be retired/recycled by HR without ever touching money records.
+
+model Wallet {
+  id         String       @id @default(uuid())
+  walletCode String       @unique
+  kind       WalletKind
+  status     WalletStatus @default(ACTIVE)
+
+  userId     String?      @unique
+  user       User?        @relation(fields: [userId], references: [id])
+  employeeId String?      @unique
+  employee   Employee?    @relation(fields: [employeeId], references: [id])
+  clientId   String?      @unique
+  client     Client?      @relation(fields: [clientId], references: [id])
+
+  balance    Decimal      @default(0) @db.Decimal(18, 2)
+  currency   String       @default("NGN")
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  transactions WalletTransaction[]
+}
+
+model WalletTransaction {
+  id            String             @id @default(uuid())
+  walletId      String
+  wallet        Wallet             @relation(fields: [walletId], references: [id])
+  type          WalletTxnType
+  direction     WalletTxnDirection
+  amount        Decimal            @db.Decimal(18, 2)
+  balanceAfter  Decimal?           @db.Decimal(18, 2)
+  status        WalletTxnStatus    @default(PENDING)
+  reference     String             @unique
+  description   String?
+  clientId      String?
+  initiatedById String?
+  confirmedById String?
+  confirmedAt   DateTime?
+  provider      String             @default("MANUAL") // MANUAL | FLUTTERWAVE
+  providerRef   String?
+  metadata      Json?
+  createdAt     DateTime           @default(now())
+
+  @@index([walletId, createdAt])
+  @@index([clientId])
+  @@index([status])
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  message   String
+  link      String?
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId, isRead])
 }

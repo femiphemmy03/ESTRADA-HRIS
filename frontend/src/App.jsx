@@ -17,6 +17,9 @@ import Payroll from './pages/payroll/Payroll.jsx';
 import Clients from './pages/clients/Clients.jsx';
 import Exit from './pages/exit/Exit.jsx';
 import Admin from './pages/admin/Admin.jsx';
+import ClientAccess from './pages/admin/ClientAccess.jsx';
+import Wallet from './pages/wallet/Wallet.jsx';
+import PayrollActivity from './pages/payroll/PayrollActivity.jsx';
 
 export default function App() {
   return (
@@ -35,6 +38,9 @@ export default function App() {
         <Route path="/attendance" element={<Attendance />} />
         <Route path="/leave" element={<Leave />} />
         <Route path="/payroll" element={<Payroll />} />
+        <Route path="/payroll/activity" element={<ProtectedRoute roles={['SUPER_ADMIN']}><PayrollActivity /></ProtectedRoute>} />
+        <Route path="/wallet" element={<Wallet />} />
+        <Route path="/client-access" element={<ProtectedRoute roles={['SUPER_ADMIN']}><ClientAccess /></ProtectedRoute>} />
         <Route path="/clients" element={<ProtectedRoute roles={['SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER', 'TEAM_LEAD']}><Clients /></ProtectedRoute>} />
         <Route path="/exit" element={<ProtectedRoute roles={['SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER']}><Exit /></ProtectedRoute>} />
         <Route path="/admin" element={<ProtectedRoute roles={['SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER']}><Admin /></ProtectedRoute>} />

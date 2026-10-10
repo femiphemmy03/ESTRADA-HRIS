@@ -9,8 +9,11 @@ const NAV = [
   { to: '/attendance', label: 'Attendance', icon: '📍', roles: null },
   { to: '/leave', label: 'Leave', icon: '🌴', roles: null },
   { to: '/payroll', label: 'Payroll', icon: '💰', roles: ['SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER', 'PAYROLL_OFFICER', 'EMPLOYEE', 'TEAM_LEAD'] },
+  { to: '/wallet', label: 'Wallet', icon: '👛', roles: null },
+  { to: '/payroll/activity', label: 'Payroll Activity', icon: '🧾', roles: ['SUPER_ADMIN'] },
   { to: '/clients', label: 'Clients & Sites', icon: '🏢', roles: ['SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER', 'TEAM_LEAD'] },
   { to: '/exit', label: 'Exit Management', icon: '🚪', roles: ['SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER'] },
+  { to: '/client-access', label: 'Client Access', icon: '🔐', roles: ['SUPER_ADMIN'] },
   { to: '/admin', label: 'Administration', icon: '⚙️', roles: ['SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER'] },
 ];
 

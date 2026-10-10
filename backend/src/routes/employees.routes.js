@@ -3,17 +3,48 @@ import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { logActivity } from '../utils/activityLog.js';
+import { getScope, inScope, canAccessEmployee } from '../utils/clientScope.js';
 
 const router = Router();
 router.use(requireAuth);
 
 const ADMIN_ROLES = ['SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER'];
 
+/**
+ * Loads an employee and enforces client scoping. Sends the 404/403 itself and returns null on failure.
+ * Super Admin: anyone. Employee: themselves. Team Lead: direct reports. HR roles: employees under
+ * their assigned clients (or not yet placed under any client).
+ */
+async function loadAccessibleEmployee(req, res, id, extra = {}) {
+  const target = await prisma.employee.findUnique({ where: { id }, ...extra });
+  if (!target) {
+    res.status(404).json({ message: 'Employee not found' });
+    return null;
+  }
+  if (!(await canAccessEmployee(req.user, target))) {
+    res.status(403).json({ message: 'You do not have access to this employee.' });
+    return null;
+  }
+  return target;
+}
+
 router.get('/', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER', 'PAYROLL_OFFICER', 'TEAM_LEAD'), async (req, res, next) => {
   try {
     const { q, departmentId, clientId, siteId, employmentStatus, archived } = req.query;
+
+    // Client scoping: HR roles only see their assigned clients (+ people not yet placed under a client);
+    // Team Leads only see their direct reports.
+    let scopeFilter = {};
+    if (req.user.role === 'TEAM_LEAD') {
+      scopeFilter = { teamLeadId: req.user.employee?.id ?? '__none__' };
+    } else if (req.user.role !== 'SUPER_ADMIN') {
+      const scope = await getScope(req.user);
+      scopeFilter = { OR: [{ clientId: { in: scope.clientIds } }, { clientId: null }] };
+    }
+
     const employees = await prisma.employee.findMany({
       where: {
+        AND: [scopeFilter],
         archived: archived === 'true',
         ...(departmentId ? { departmentId } : {}),
         ...(clientId ? { clientId } : {}),
@@ -28,7 +59,6 @@ router.get('/', requireRole('SUPER_ADMIN', 'HR_ADMIN', 'HR_MANAGER', 'PAYROLL_OF
               ],
             }
           : {}),
-        ...(req.user.role === 'TEAM_LEAD' ? { teamLeadId: req.user.employee?.id } : {}),
       },
       include: { department: true, position: true, client: true, site: true },
       orderBy: { createdAt: 'desc' },
@@ -62,6 +92,7 @@ router.get('/eligible-team-leads', requireRole(...ADMIN_ROLES), async (req, res,
 
 router.get('/:id', async (req, res, next) => {
   try {
+    if (!(await loadAccessibleEmployee(req, res, req.params.id))) return;
     const employee = await prisma.employee.findUnique({
       where: { id: req.params.id },
       include: {
@@ -112,12 +143,20 @@ const updateSchema = z.object({
 router.patch('/:id', async (req, res, next) => {
   try {
     const data = updateSchema.parse(req.body);
-    const target = await prisma.employee.findUnique({ where: { id: req.params.id } });
-    if (!target) return res.status(404).json({ message: 'Employee not found' });
+    const target = await loadAccessibleEmployee(req, res, req.params.id);
+    if (!target) return;
 
     const isSelf = target.userId === req.user.id;
     const isPrivileged = ADMIN_ROLES.includes(req.user.role);
     if (!isSelf && !isPrivileged) return res.status(403).json({ message: 'Not permitted' });
+
+    // Placing an employee under a client is limited to the clients the admin is assigned to.
+    if (data.clientId && req.user.role !== 'SUPER_ADMIN') {
+      const scope = await getScope(req.user);
+      if (!inScope(scope, data.clientId)) {
+        return res.status(403).json({ message: 'You can only place employees under clients assigned to you.' });
+      }
+    }
 
     if (data.teamLeadId) {
       if (data.teamLeadId === target.id) {
@@ -152,6 +191,7 @@ router.patch('/:id', async (req, res, next) => {
 
 router.post('/:id/submit-onboarding', async (req, res, next) => {
   try {
+    if (!(await loadAccessibleEmployee(req, res, req.params.id))) return;
     const employee = await prisma.employee.update({
       where: { id: req.params.id },
       data: { onboardingStatus: 'SUBMITTED' },
@@ -165,6 +205,7 @@ router.post('/:id/submit-onboarding', async (req, res, next) => {
 
 router.post('/:id/approve-onboarding', requireRole(...ADMIN_ROLES), async (req, res, next) => {
   try {
+    if (!(await loadAccessibleEmployee(req, res, req.params.id))) return;
     const employee = await prisma.employee.update({
       where: { id: req.params.id },
       data: { onboardingStatus: 'APPROVED', employmentStatus: 'ACTIVE', dateHired: new Date() },
@@ -178,6 +219,7 @@ router.post('/:id/approve-onboarding', requireRole(...ADMIN_ROLES), async (req, 
 
 router.post('/:id/archive', requireRole(...ADMIN_ROLES), async (req, res, next) => {
   try {
+    if (!(await loadAccessibleEmployee(req, res, req.params.id))) return;
     const employee = await prisma.employee.update({
       where: { id: req.params.id },
       data: { archived: true, employmentStatus: 'EXITED' },
@@ -191,6 +233,7 @@ router.post('/:id/archive', requireRole(...ADMIN_ROLES), async (req, res, next) 
 
 router.get('/:id/timeline', async (req, res, next) => {
   try {
+    if (!(await loadAccessibleEmployee(req, res, req.params.id))) return;
     const logs = await prisma.activityLog.findMany({
       where: { employeeId: req.params.id },
       orderBy: { createdAt: 'desc' },

@@ -21,6 +21,7 @@ export default function Clients() {
   const [showNewClient, setShowNewClient] = useState(false);
   const [showNewSite, setShowNewSite] = useState(false);
   const isPrivileged = ADMIN_ROLES.includes(user?.role);
+  const isSuperAdmin = user?.role === 'SUPER_ADMIN'; // only the Super Admin creates clients
 
   async function load() {
     const { data } = await api.get('/clients');
@@ -43,7 +44,7 @@ export default function Clients() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold text-slate-900 dark:text-white">Clients & Sites</h1>
-        {isPrivileged && <button onClick={() => setShowNewClient(true)} className="btn-primary">+ New Client</button>}
+        {isSuperAdmin && <button onClick={() => setShowNewClient(true)} className="btn-primary">+ New Client</button>}
       </div>
 
       <div className="grid lg:grid-cols-3 gap-5">
@@ -57,7 +58,7 @@ export default function Clients() {
               {c.name} <span className="opacity-70">({c.sites.length} sites)</span>
             </button>
           ))}
-          {clients.length === 0 && <p className="text-slate-400 text-sm">No clients yet.</p>}
+          {clients.length === 0 && <p className="text-slate-400 text-sm">{isSuperAdmin ? 'No clients yet.' : 'No clients have been assigned to you yet. Ask the Super Admin for access.'}</p>}
         </div>
 
         <div className="lg:col-span-2 space-y-4">

@@ -9,6 +9,8 @@ import { logActivity } from '../utils/activityLog.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { env } from '../config/env.js';
 import { DEFAULT_ONBOARDING_TASKS } from '../utils/onboardingTasks.js';
+import { getScope, inScope } from '../utils/clientScope.js';
+import { ensurePersonalWallet } from '../utils/wallet.js';
 
 const router = Router();
 
@@ -78,6 +80,15 @@ const inviteSchema = z.object({
 router.post('/invite', requireAuth, requireRole('SUPER_ADMIN', 'HR_ADMIN'), async (req, res, next) => {
   try {
     const data = inviteSchema.parse(req.body);
+
+    // HR Admins can only place new people under clients the Super Admin has assigned to them.
+    if (req.user.role !== 'SUPER_ADMIN') {
+      const scope = await getScope(req.user);
+      if (!data.clientId || !inScope(scope, data.clientId)) {
+        return res.status(403).json({ message: 'Choose one of the clients assigned to you. Ask the Super Admin if you need access to another client.' });
+      }
+    }
+
     const invitationToken = crypto.randomBytes(32).toString('hex');
     const invitationExpiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000);
 
@@ -129,6 +140,14 @@ router.post('/invite', requireAuth, requireRole('SUPER_ADMIN', 'HR_ADMIN'), asyn
       },
       include: { employee: true },
     });
+
+    // Every person gets a wallet with its own wallet ID — separate from their employee code —
+    // linked to their employee record. Best-effort: it is also created on first use if this fails.
+    try {
+      await ensurePersonalWallet(user);
+    } catch (walletErr) {
+      console.error('[invite] wallet creation deferred:', walletErr.message);
+    }
 
     await logActivity({
       employeeId: user.employee.id,

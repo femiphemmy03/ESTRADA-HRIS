@@ -6,6 +6,7 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 import { distanceInMeters } from '../utils/geo.js';
 import { logActivity } from '../utils/activityLog.js';
 import { nowInLagos, minutesSinceMidnightLagos, lagosDateBoundary } from '../utils/timezone.js';
+import { getRuleForEmployee } from '../utils/attendanceRules.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -17,14 +18,6 @@ function todayCodeLagos(date = new Date()) {
     .format(date)
     .toUpperCase();
   return WEEKDAY_CODES.find((c) => weekdayName.startsWith(c)) || WEEKDAY_CODES[date.getDay()];
-}
-
-async function getRuleForEmployee(employee) {
-  if (employee.siteId) {
-    const siteRule = await prisma.attendanceRule.findUnique({ where: { siteId: employee.siteId } });
-    if (siteRule) return siteRule;
-  }
-  return prisma.attendanceRule.findFirst({ where: { isDefault: true } });
 }
 
 function parseHHMM(str) {

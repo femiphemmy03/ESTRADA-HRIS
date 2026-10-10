@@ -50,27 +50,62 @@ function splitAllowances(breakdown) {
   return { housing, transport, other };
 }
 
+const naira = (n) => `₦${Number(n || 0).toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+const PAY_STATUS_STYLE = {
+  NOT_PAID: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300',
+  PROCESSING: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
+  SUCCESS: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
+  FAILED: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
+};
+
 function PayrollRuns({ canRunPayroll, canApprove }) {
   const { user } = useAuth();
+  const isSuper = user?.role === 'SUPER_ADMIN';
   const [runs, setRuns] = useState([]);
+  const [clients, setClients] = useState([]);
+  const [clientId, setClientId] = useState('');
   const [month, setMonth] = useState(new Date().getMonth() + 1);
   const [year, setYear] = useState(new Date().getFullYear());
   const [selectedRun, setSelectedRun] = useState(null);
   const [payslips, setPayslips] = useState([]);
+  const [checked, setChecked] = useState(new Set());
+  const [walletBalance, setWalletBalance] = useState(null);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const [exporting, setExporting] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const run = runs.find((r) => r.id === selectedRun);
+  const paymentsOpen = run && ['APPROVED', 'PAID'].includes(run.status);
 
   async function loadRuns() {
     const { data } = await api.get('/payroll/runs');
     setRuns(data.runs);
   }
-  useEffect(() => { loadRuns(); }, []);
+  useEffect(() => {
+    loadRuns();
+    api.get('/clients').then((r) => {
+      setClients(r.data.clients);
+      if (r.data.clients.length === 1) setClientId(r.data.clients[0].id);
+    }).catch(() => {});
+  }, []);
+
+  async function loadWalletBalance(forRun) {
+    setWalletBalance(null);
+    if (!isSuper || !forRun?.clientId) return;
+    try {
+      const { data } = await api.get('/wallet/clients');
+      setWalletBalance(data.clients.find((c) => c.clientId === forRun.clientId)?.balance ?? 0);
+    } catch { /* balance is a convenience only */ }
+  }
 
   async function act(action, runId, body) {
     setError('');
+    setNotice('');
     try {
       await api.post(`/payroll/runs/${runId}/${action}`, body);
-      loadRuns();
+      await loadRuns();
       if (selectedRun === runId) viewPayslips(runId);
     } catch (err) {
       setError(err.response?.data?.message || 'Action failed');
@@ -78,14 +113,22 @@ function PayrollRuns({ canRunPayroll, canApprove }) {
   }
 
   async function createRun() {
-    await api.post('/payroll/runs', { month: Number(month), year: Number(year) });
-    loadRuns();
+    setError('');
+    if (!clientId) { setError('Choose a client first — payroll is run per client.'); return; }
+    try {
+      await api.post('/payroll/runs', { month: Number(month), year: Number(year), clientId });
+      loadRuns();
+    } catch (err) {
+      setError(err.response?.data?.message || 'Could not open the run');
+    }
   }
 
   async function viewPayslips(runId) {
     setSelectedRun(runId);
+    setChecked(new Set());
     const { data } = await api.get(`/payroll/runs/${runId}/payslips`);
     setPayslips(data.payslips);
+    loadWalletBalance(runs.find((r) => r.id === runId));
   }
 
   async function exportRun(runId, runLabel) {
@@ -104,6 +147,56 @@ function PayrollRuns({ canRunPayroll, canApprove }) {
     if (reason) act('reject', runId, { reason });
   }
 
+  const payable = (p) => (p.paymentStatus === 'SUCCESS' ? false : true);
+  const selectable = payslips.filter(payable);
+
+  function toggle(id) {
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  function toggleAll() {
+    setChecked((prev) => (prev.size === selectable.length ? new Set() : new Set(selectable.map((p) => p.id))));
+  }
+
+  async function setApproval(approve, ids) {
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const { data } = await api.post(`/payroll/runs/${selectedRun}/payment-approval`, { approve, ...(ids ? { payslipIds: ids } : {}) });
+      setNotice(`${approve ? 'Approved' : 'Approval removed for'} ${data.updated} payment(s).`);
+      await viewPayslips(selectedRun);
+    } catch (err) {
+      setError(err.response?.data?.message || 'Could not update payment approval');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const approvedUnpaid = payslips.filter((p) => p.paymentApproval === 'APPROVED' && ['NOT_PAID', 'FAILED'].includes(p.paymentStatus));
+  const approvedTotal = approvedUnpaid.reduce((n, p) => n + p.totalPayable, 0);
+
+  async function disburse() {
+    if (!window.confirm(`Disburse ${naira(approvedTotal)} to ${approvedUnpaid.length} employee wallet(s) from the client wallet? This cannot be undone.`)) return;
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const { data } = await api.post(`/payroll/runs/${selectedRun}/disburse`);
+      setNotice(`Paid ${data.succeeded} employee(s) — ${naira(data.total)}.${data.failed ? ` ${data.failed} failed: ${data.failures.join('; ')}` : ''}`);
+      await loadRuns();
+      await viewPayslips(selectedRun);
+    } catch (err) {
+      setError(err.response?.data?.message || 'Disbursement failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const totals = payslips.reduce(
     (acc, p) => {
       const { housing, transport, other } = splitAllowances(p.breakdown);
@@ -116,32 +209,45 @@ function PayrollRuns({ canRunPayroll, canApprove }) {
       acc.pension += p.pensionEmployee;
       acc.nhf += p.nhf;
       acc.net += p.netPay;
+      acc.payable += p.totalPayable;
       return acc;
     },
-    { basic: 0, housing: 0, transport: 0, other: 0, overtime: 0, paye: 0, pension: 0, nhf: 0, net: 0 }
+    { basic: 0, housing: 0, transport: 0, other: 0, overtime: 0, paye: 0, pension: 0, nhf: 0, net: 0, payable: 0 }
   );
+
+  const colCount = 14 + (isSuper && paymentsOpen ? 1 : 0);
 
   return (
     <div className="space-y-5">
       {error && <div className="bg-red-50 dark:bg-red-900/30 text-red-600 text-sm px-3 py-2 rounded-lg">{error}</div>}
+      {notice && <div className="bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300 text-sm px-3 py-2 rounded-lg">{notice}</div>}
 
       {canRunPayroll && (
         <div className="card p-4 flex flex-wrap items-end gap-3">
+          <div>
+            <label className="label">Client</label>
+            <select className="input w-56" value={clientId} onChange={(e) => setClientId(e.target.value)}>
+              <option value="">Select client…</option>
+              {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </div>
           <div><label className="label">Month</label><input type="number" min={1} max={12} className="input w-24" value={month} onChange={(e) => setMonth(e.target.value)} /></div>
           <div><label className="label">Year</label><input type="number" className="input w-28" value={year} onChange={(e) => setYear(e.target.value)} /></div>
           <button onClick={createRun} className="btn-primary">Create/Open Run</button>
+          {clients.length === 0 && <p className="text-xs text-amber-600">No clients assigned to you yet — ask the Super Admin for access.</p>}
         </div>
       )}
 
       <div className="card overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 dark:bg-slate-800/50 text-slate-500 dark:text-slate-400">
-            <tr><th className="text-left px-4 py-3">Period</th><th className="text-left px-4 py-3">Status</th><th className="text-left px-4 py-3">Actions</th></tr>
+            <tr><th className="text-left px-4 py-3">Period</th><th className="text-left px-4 py-3">Client</th><th className="text-left px-4 py-3">Status</th><th className="text-left px-4 py-3">Actions</th></tr>
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
             {runs.map((r) => (
-              <tr key={r.id}>
+              <tr key={r.id} className={selectedRun === r.id ? 'bg-orange-50/50 dark:bg-slate-800/40' : ''}>
                 <td className="px-4 py-3">{r.month}/{r.year}</td>
+                <td className="px-4 py-3">{r.client?.name || <span className="text-slate-400">Legacy (all clients)</span>}</td>
                 <td className="px-4 py-3">
                   <StatusBadge status={r.status} />
                   <p className="text-xs text-slate-400 mt-1">{STATUS_HINTS[r.status]}</p>
@@ -170,28 +276,54 @@ function PayrollRuns({ canRunPayroll, canApprove }) {
                   )}
                   <button onClick={() => viewPayslips(r.id)} className="btn-secondary text-xs">View Summary</button>
                   {(canRunPayroll || canApprove) && (
-                    <button onClick={() => exportRun(r.id, `${r.month}-${r.year}`)} disabled={exporting} className="btn-secondary text-xs">
+                    <button onClick={() => exportRun(r.id, `${r.client?.name || 'all'}-${r.month}-${r.year}`)} disabled={exporting} className="btn-secondary text-xs">
                       {exporting ? 'Exporting…' : 'Export Excel'}
                     </button>
                   )}
                 </td>
               </tr>
             ))}
-            {runs.length === 0 && <tr><td className="px-4 py-6 text-slate-400" colSpan={3}>No payroll runs yet.</td></tr>}
+            {runs.length === 0 && <tr><td className="px-4 py-6 text-slate-400" colSpan={4}>No payroll runs yet.</td></tr>}
           </tbody>
         </table>
       </div>
 
       {selectedRun && (
         <div className="card overflow-x-auto">
-          <div className="px-4 pt-4">
-            <h3 className="font-semibold text-slate-800 dark:text-white">Payroll Summary</h3>
-            <p className="text-xs text-slate-400 mb-2">Full breakdown per employee — visible to everyone with payroll access, regardless of approval stage.</p>
+          <div className="px-4 pt-4 flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="font-semibold text-slate-800 dark:text-white">Payroll Summary{run?.client ? ` — ${run.client.name}` : ''} {run ? `(${run.month}/${run.year})` : ''}</h3>
+              <p className="text-xs text-slate-400 mb-2">Full breakdown per employee — visible to everyone with payroll access, regardless of approval stage.</p>
+            </div>
+
+            {isSuper && paymentsOpen && (
+              <div className="flex flex-col items-end gap-2">
+                {walletBalance !== null && (
+                  <p className={`text-xs ${walletBalance < approvedTotal ? 'text-red-600' : 'text-slate-500'}`}>
+                    Client wallet balance: <span className="font-semibold">{naira(walletBalance)}</span>
+                    {walletBalance < approvedTotal && ' — not enough for the approved payments'}
+                  </p>
+                )}
+                <div className="flex flex-wrap gap-2 justify-end">
+                  <button disabled={busy || checked.size === 0} onClick={() => setApproval(true, [...checked])} className="btn-secondary text-xs">Approve selected ({checked.size})</button>
+                  <button disabled={busy || selectable.length === 0} onClick={() => setApproval(true)} className="btn-secondary text-xs">Approve all unpaid</button>
+                  <button disabled={busy || checked.size === 0} onClick={() => setApproval(false, [...checked])} className="btn-secondary text-xs">Remove approval</button>
+                  <button disabled={busy || approvedUnpaid.length === 0} onClick={disburse} className="btn-primary text-xs">
+                    {busy ? 'Working…' : `Disburse approved (${approvedUnpaid.length} · ${naira(approvedTotal)})`}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
+
           <table className="w-full text-sm">
             <thead className="bg-slate-50 dark:bg-slate-800/50 text-slate-500 dark:text-slate-400">
               <tr>
+                {isSuper && paymentsOpen && (
+                  <th className="px-3 py-3"><input type="checkbox" checked={selectable.length > 0 && checked.size === selectable.length} onChange={toggleAll} /></th>
+                )}
                 <th className="text-left px-3 py-3">Employee</th>
+                <th className="text-right px-3 py-3">Days</th>
                 <th className="text-right px-3 py-3">Basic</th>
                 <th className="text-right px-3 py-3">Housing</th>
                 <th className="text-right px-3 py-3">Transport</th>
@@ -201,6 +333,9 @@ function PayrollRuns({ canRunPayroll, canApprove }) {
                 <th className="text-right px-3 py-3">Pension</th>
                 <th className="text-right px-3 py-3">NHF</th>
                 <th className="text-right px-3 py-3">Net Pay</th>
+                <th className="text-right px-3 py-3">Total Payable</th>
+                <th className="text-left px-3 py-3">Payment Approval</th>
+                <th className="text-left px-3 py-3">Payment Status</th>
                 <th className="text-left px-3 py-3">Payslip</th>
               </tr>
             </thead>
@@ -209,7 +344,19 @@ function PayrollRuns({ canRunPayroll, canApprove }) {
                 const { housing, transport, other } = splitAllowances(p.breakdown);
                 return (
                   <tr key={p.id}>
-                    <td className="px-3 py-3">{p.employee.firstName} {p.employee.lastName}</td>
+                    {isSuper && paymentsOpen && (
+                      <td className="px-3 py-3">
+                        {payable(p) && <input type="checkbox" checked={checked.has(p.id)} onChange={() => toggle(p.id)} />}
+                      </td>
+                    )}
+                    <td className="px-3 py-3">{p.employee.firstName} {p.employee.lastName}<span className="block text-[11px] text-slate-400">{p.employee.employeeCode}</span></td>
+                    <td className="px-3 py-3 text-right whitespace-nowrap">
+                      {p.requiredDays != null ? (
+                        <span className={p.prorationFactor < 1 ? 'text-amber-600 font-medium' : ''} title={p.prorationFactor < 1 ? `Prorated to ${(p.prorationFactor * 100).toFixed(1)}%` : 'Full attendance'}>
+                          {p.daysPresent}/{p.requiredDays}
+                        </span>
+                      ) : '—'}
+                    </td>
                     <td className="px-3 py-3 text-right">{p.basicSalary.toFixed(2)}</td>
                     <td className="px-3 py-3 text-right">{housing.toFixed(2)}</td>
                     <td className="px-3 py-3 text-right">{transport.toFixed(2)}</td>
@@ -218,7 +365,17 @@ function PayrollRuns({ canRunPayroll, canApprove }) {
                     <td className="px-3 py-3 text-right">-{p.paye.toFixed(2)}</td>
                     <td className="px-3 py-3 text-right">-{p.pensionEmployee.toFixed(2)}</td>
                     <td className="px-3 py-3 text-right">-{p.nhf.toFixed(2)}</td>
-                    <td className="px-3 py-3 text-right font-semibold">{p.netPay.toFixed(2)}</td>
+                    <td className="px-3 py-3 text-right">{p.netPay.toFixed(2)}</td>
+                    <td className="px-3 py-3 text-right font-semibold">{p.totalPayable.toFixed(2)}</td>
+                    <td className="px-3 py-3">
+                      <span className={`badge ${p.paymentApproval === 'APPROVED' ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'}`}>
+                        {p.paymentApproval === 'APPROVED' ? 'Approved' : 'Pending'}
+                      </span>
+                    </td>
+                    <td className="px-3 py-3">
+                      <span className={`badge ${PAY_STATUS_STYLE[p.paymentStatus]}`}>{p.paymentStatus.replace('_', ' ')}</span>
+                      {p.paymentMessage && <p className={`text-[11px] mt-1 max-w-[14rem] ${p.paymentStatus === 'FAILED' ? 'text-red-500' : 'text-slate-400'}`}>{p.paymentMessage}</p>}
+                    </td>
                     <td className="px-3 py-3">
                       {p.pdfUrl ? (
                         <a href={p.pdfUrl} target="_blank" rel="noreferrer" className="text-xs text-estrada-red hover:underline">Download</a>
@@ -229,12 +386,14 @@ function PayrollRuns({ canRunPayroll, canApprove }) {
                   </tr>
                 );
               })}
-              {payslips.length === 0 && <tr><td className="px-3 py-6 text-slate-400" colSpan={11}>No payslips in this run yet — process it first.</td></tr>}
+              {payslips.length === 0 && <tr><td className="px-3 py-6 text-slate-400" colSpan={colCount}>No payslips in this run yet — process it first.</td></tr>}
             </tbody>
             {payslips.length > 0 && (
               <tfoot className="bg-slate-50 dark:bg-slate-800/50 font-semibold text-slate-700 dark:text-slate-200">
                 <tr>
+                  {isSuper && paymentsOpen && <td />}
                   <td className="px-3 py-3">Total</td>
+                  <td />
                   <td className="px-3 py-3 text-right">{totals.basic.toFixed(2)}</td>
                   <td className="px-3 py-3 text-right">{totals.housing.toFixed(2)}</td>
                   <td className="px-3 py-3 text-right">{totals.transport.toFixed(2)}</td>
@@ -244,7 +403,8 @@ function PayrollRuns({ canRunPayroll, canApprove }) {
                   <td className="px-3 py-3 text-right">-{totals.pension.toFixed(2)}</td>
                   <td className="px-3 py-3 text-right">-{totals.nhf.toFixed(2)}</td>
                   <td className="px-3 py-3 text-right">{totals.net.toFixed(2)}</td>
-                  <td></td>
+                  <td className="px-3 py-3 text-right">{totals.payable.toFixed(2)}</td>
+                  <td colSpan={3}></td>
                 </tr>
               </tfoot>
             )}

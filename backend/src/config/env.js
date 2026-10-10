@@ -25,4 +25,11 @@ export const env = {
   supabaseServiceRoleKey: required('SUPABASE_SERVICE_ROLE_KEY'),
   supabaseStorageBucket: required('SUPABASE_STORAGE_BUCKET', 'estrada-hris-documents'),
   defaultGpsRadiusMeters: Number(required('DEFAULT_GPS_RADIUS_METERS', 150)),
+
+  // Where clients/admins pay money in to fund a client wallet. Shown read-only in the app.
+  // (Replaced by per-client Flutterwave virtual accounts in the payments batch.)
+  fundingBankName: required('FUNDING_BANK_NAME', ''),
+  fundingAccountName: required('FUNDING_ACCOUNT_NAME', ''),
+  fundingAccountNumber: required('FUNDING_ACCOUNT_NUMBER', ''),
+  fundingNote: required('FUNDING_NOTE', 'Use the reference shown after you submit as your transfer narration.'),
 };

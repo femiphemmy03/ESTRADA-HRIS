@@ -72,9 +72,15 @@ function round2(n) {
  * hardcoded/example rate anywhere in this file — if nothing has been configured yet,
  * the toggle simply has no effect, rather than silently applying a guessed number.
  */
-export async function computePayslip({ salaryStructure, clientId = null, overtimeHours = 0, overtimeRate = 0, asOfDate = new Date() }) {
-  const basic = salaryStructure.basicSalary;
-  const allowances = salaryStructure.allowances || [];
+export async function computePayslip({ salaryStructure, clientId = null, overtimeHours = 0, overtimeRate = 0, asOfDate = new Date(), prorationFactor = 1, attendanceInfo = null }) {
+  // prorationFactor (0..1): when a client pays on a fixed number of present days, earnings are scaled by
+  // days present / required days BEFORE statutory deductions, which are then computed on what was earned.
+  // Fixed "other deductions" (loans, etc.) are not prorated.
+  const factor = Math.min(1, Math.max(0, prorationFactor));
+  const fullBasic = salaryStructure.basicSalary;
+  const fullAllowances = salaryStructure.allowances || [];
+  const basic = round2(fullBasic * factor);
+  const allowances = fullAllowances.map((a) => ({ ...a, amount: round2(a.amount * factor) }));
   const deductions = salaryStructure.deductions || [];
 
   const grossAllowances = allowances.reduce((sum, a) => sum + a.amount, 0);
@@ -127,8 +133,15 @@ export async function computePayslip({ salaryStructure, clientId = null, overtim
     nhf: round2(nhf),
     totalDeductions,
     netPay,
+    totalPayable: netPay,
+    prorationFactor: attendanceInfo ? factor : null,
+    daysPresent: attendanceInfo ? attendanceInfo.daysPresent : null,
+    requiredDays: attendanceInfo ? attendanceInfo.requiredDays : null,
     breakdown: {
       allowances,
+      ...(attendanceInfo
+        ? { attendance: { ...attendanceInfo, factor, fullBasic, fullAllowances } }
+        : {}),
       deductions,
       grossPay: round2(grossPay),
       statutoryApplied: {
