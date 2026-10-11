@@ -2,6 +2,10 @@ import { useEffect, useState } from 'react';
 import api, { downloadFile } from '../../lib/api.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import StatusBadge from '../../components/shared/StatusBadge.jsx';
+import PayrollSheetModal from './PayrollSheetModal.jsx';
+import RunReportModal from './RunReportModal.jsx';
+import StatutoryTab from './StatutoryTab.jsx';
+import PayrollHistory from './PayrollHistory.jsx';
 
 export default function Payroll() {
   const { user } = useAuth();
@@ -10,14 +14,14 @@ export default function Payroll() {
   const [tab, setTab] = useState(canRunPayroll || canApprove ? 'Runs' : 'My Payslips');
   const tabs = [
     ...(canRunPayroll || canApprove ? ['Runs'] : []),
-    ...(canRunPayroll ? ['Salary Structures', 'Statutory Settings'] : []),
+    ...(canRunPayroll ? ['Salary Structures', 'Statutory Settings', 'PAYE', 'Pension', 'History & Reports'] : []),
     'My Payslips',
   ];
 
   return (
     <div className="space-y-6">
       <h1 className="text-xl font-bold text-slate-900 dark:text-white">Payroll</h1>
-      <div className="flex gap-2 border-b border-slate-200 dark:border-slate-800">
+      <div className="flex gap-2 border-b border-slate-200 dark:border-slate-800 overflow-x-auto">
         {tabs.map((t) => (
           <button key={t} onClick={() => setTab(t)} className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${tab === t ? 'border-estrada-red text-estrada-red' : 'border-transparent text-slate-500'}`}>{t}</button>
         ))}
@@ -25,6 +29,9 @@ export default function Payroll() {
       {tab === 'Runs' && <PayrollRuns canRunPayroll={canRunPayroll} canApprove={canApprove} />}
       {tab === 'Salary Structures' && <SalaryStructures />}
       {tab === 'Statutory Settings' && <StatutorySettings />}
+      {tab === 'PAYE' && <StatutoryTab type="PAYE" />}
+      {tab === 'Pension' && <StatutoryTab type="PENSION" />}
+      {tab === 'History & Reports' && <PayrollHistory />}
       {tab === 'My Payslips' && <MyPayslips />}
     </div>
   );
@@ -75,6 +82,8 @@ function PayrollRuns({ canRunPayroll, canApprove }) {
   const [notice, setNotice] = useState('');
   const [exporting, setExporting] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [sheetRun, setSheetRun] = useState(null);
+  const [reportRun, setReportRun] = useState(null);
 
   const run = runs.find((r) => r.id === selectedRun);
   const paymentsOpen = run && ['APPROVED', 'PAID'].includes(run.status);
@@ -274,7 +283,11 @@ function PayrollRuns({ canRunPayroll, canApprove }) {
                       <button onClick={() => reject(r.id)} className="btn-secondary text-xs text-red-600">Reject</button>
                     </>
                   )}
+                  {canRunPayroll && r.clientId && ['DRAFT', 'REVIEW', 'REJECTED'].includes(r.status) && (
+                    <button onClick={() => setSheetRun(r)} className="btn-secondary text-xs">Template / Upload sheet</button>
+                  )}
                   <button onClick={() => viewPayslips(r.id)} className="btn-secondary text-xs">View Summary</button>
+                  {r.clientId && <button onClick={() => setReportRun(r)} className="btn-secondary text-xs">Report</button>}
                   {(canRunPayroll || canApprove) && (
                     <button onClick={() => exportRun(r.id, `${r.client?.name || 'all'}-${r.month}-${r.year}`)} disabled={exporting} className="btn-secondary text-xs">
                       {exporting ? 'Exporting…' : 'Export Excel'}
@@ -411,6 +424,15 @@ function PayrollRuns({ canRunPayroll, canApprove }) {
           </table>
         </div>
       )}
+
+      {sheetRun && (
+        <PayrollSheetModal
+          run={sheetRun}
+          onClose={() => setSheetRun(null)}
+          onImported={() => { loadRuns(); if (selectedRun === sheetRun.id) viewPayslips(sheetRun.id); }}
+        />
+      )}
+      {reportRun && <RunReportModal run={reportRun} onClose={() => setReportRun(null)} />}
     </div>
   );
 }

@@ -72,7 +72,7 @@ function round2(n) {
  * hardcoded/example rate anywhere in this file — if nothing has been configured yet,
  * the toggle simply has no effect, rather than silently applying a guessed number.
  */
-export async function computePayslip({ salaryStructure, clientId = null, overtimeHours = 0, overtimeRate = 0, asOfDate = new Date(), prorationFactor = 1, attendanceInfo = null }) {
+export async function computePayslip({ salaryStructure, clientId = null, overtimeHours = 0, overtimeRate = 0, asOfDate = new Date(), prorationFactor = 1, attendanceInfo = null, overrides = {} }) {
   // prorationFactor (0..1): when a client pays on a fixed number of present days, earnings are scaled by
   // days present / required days BEFORE statutory deductions, which are then computed on what was earned.
   // Fixed "other deductions" (loans, etc.) are not prorated.
@@ -89,7 +89,10 @@ export async function computePayslip({ salaryStructure, clientId = null, overtim
 
   let pensionEmployee = 0;
   let pensionSettingsUsed = null;
-  if (salaryStructure.pensionEnabled) {
+  if (overrides.pensionEmployee != null) {
+    // Payroll-sheet flow: the pension amount is already known; PAYE relief must use exactly that figure.
+    pensionEmployee = overrides.pensionEmployee;
+  } else if (salaryStructure.pensionEnabled) {
     const pensionSettings = await getActiveSettings('PENSION_EMPLOYEE', asOfDate, clientId);
     const pensionBase = basic + grossAllowances;
     pensionEmployee = pensionSettings ? applyFlatPercent(pensionSettings.config, pensionBase) : 0;

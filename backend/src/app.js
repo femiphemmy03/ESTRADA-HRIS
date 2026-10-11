@@ -20,6 +20,8 @@ import exitRoutes from './routes/exit.routes.js';
 import adminRoutes from './routes/admin.routes.js';
 import walletRoutes from './routes/wallet.routes.js';
 import accessRoutes from './routes/access.routes.js';
+import payrollSheetRoutes from './routes/payrollSheet.routes.js';
+import statutoryRoutes from './routes/statutory.routes.js';
 
 const app = express();
 
@@ -47,6 +49,8 @@ app.use('/api/exit', exitRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/access', accessRoutes);
+app.use('/api/payroll-sheet', payrollSheetRoutes);
+app.use('/api/statutory', statutoryRoutes);
 
 app.use(notFound);
 app.use(errorHandler);

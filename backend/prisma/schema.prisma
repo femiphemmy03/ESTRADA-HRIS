@@ -91,6 +91,19 @@ enum PayrollRunStatus {
   REJECTED
 }
 
+enum RemittanceType {
+  PAYE
+  PENSION
+}
+
+enum RemittanceLineStatus {
+  MATCHED_OK
+  MATCHED_NO_ID
+  ID_MISMATCH
+  ID_INVALID
+  UNMATCHED
+}
+
 enum PaymentApproval {
   PENDING
   APPROVED
@@ -217,6 +230,7 @@ model Employee {
   bankAccountName  String?
   pensionRSA       String?
   pensionAdmin     String?
+  payeNumber       String? // PAYE / tax ID used on PAYE schedules
 
   createdAt        DateTime          @default(now())
   updatedAt        DateTime          @updatedAt
@@ -295,6 +309,8 @@ model Client {
   wallet          Wallet?
   attendanceRule  AttendanceRule?
   payrollRuns     PayrollRun[]
+  sheetRates      PayrollSheetRates?
+  remittances     StatutoryRemittance[]
   createdAt DateTime @default(now())
 }
 
@@ -487,6 +503,11 @@ model PayrollRun {
   approvedById          String? // Super Admin final approval
   approvedAt            DateTime?
   rejectionReason       String?
+
+  // Set when the run's payslips came from an uploaded payroll sheet
+  sourceFileName String?
+  uploadedAt     DateTime?
+  uploadedById   String?
 
   createdAt   DateTime @default(now())
   payslips    Payslip[]
@@ -732,4 +753,56 @@ model Notification {
   createdAt DateTime @default(now())
 
   @@index([userId, isRead])
+}
+
+// ==========================================================
+// PAYROLL SHEET RATES + STATUTORY REMITTANCES (PAYE / PENSION)
+// ==========================================================
+
+// Per-client percentages used by the payroll sheet: how gross splits into components, employee/employer
+// pension %, ITF, NSITF, group life, management fee and VAT.
+model PayrollSheetRates {
+  id          String   @id @default(uuid())
+  clientId    String   @unique
+  client      Client   @relation(fields: [clientId], references: [id])
+  rates       Json
+  updatedById String?
+  updatedAt   DateTime @updatedAt
+}
+
+// One uploaded PAYE or Pension schedule (the sheet actually used to pay) for a client and month.
+model StatutoryRemittance {
+  id           String         @id @default(uuid())
+  type         RemittanceType
+  clientId     String
+  client       Client         @relation(fields: [clientId], references: [id])
+  month        Int
+  year         Int
+  fileName     String?
+  uploadedById String?
+  totalAmount  Float          @default(0)
+  rowCount     Int            @default(0)
+  matchedCount Int            @default(0)
+  createdAt    DateTime       @default(now())
+
+  lines StatutoryRemittanceLine[]
+
+  @@index([clientId, year, month])
+}
+
+model StatutoryRemittanceLine {
+  id           String               @id @default(uuid())
+  remittanceId String
+  remittance   StatutoryRemittance  @relation(fields: [remittanceId], references: [id], onDelete: Cascade)
+  employeeId   String?
+  employeeCode String?
+  name         String
+  idInFile     String?
+  amount       Float
+  status       RemittanceLineStatus
+  hasValidId   Boolean              @default(false)
+  note         String?
+  createdAt    DateTime             @default(now())
+
+  @@index([remittanceId])
 }

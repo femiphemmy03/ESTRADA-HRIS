@@ -138,6 +138,7 @@ const updateSchema = z.object({
   bankAccountName: z.string().optional(),
   pensionRSA: z.string().optional(),
   pensionAdmin: z.string().optional(),
+  payeNumber: z.string().optional(),
 });
 
 router.patch('/:id', async (req, res, next) => {
